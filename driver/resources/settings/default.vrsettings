@@ -1,0 +1,26 @@
+{
+	"driver_monadolink": {
+		"enable": true,
+		"serial_number": "MONADOLINK-0001",
+		"model_number": "Monado Link",
+		"log_frames": 5,
+		"openxr_runtime_json": "@MONADOLINK_OPENXR_RUNTIME_JSON@",
+		"submit_frames": true,
+		"early_wait": false,
+		"controllers": true,
+		"controller_input_profile": "{oculus}/input/touch_profile.json",
+		"controller_offset_x": 0.0,
+		"controller_offset_y": 0.0,
+		"controller_offset_z": -0.08,
+		"controller_offset_pitch": 22.0,
+		"controller_offset_yaw": 0.0,
+		"controller_offset_roll": 0.0,
+		"controller_tuning": true
+	},
+	"monadolink_display": {
+		"render_width": 1832,
+		"render_height": 1920,
+		"refresh_rate": 120.0,
+		"seconds_from_vsync_to_photons": 0.011
+	}
+}
