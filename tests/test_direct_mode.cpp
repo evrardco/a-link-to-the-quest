@@ -168,6 +168,43 @@ TEST_CASE("Submit/Present bookkeeping logs the first frames only")
 	CHECK(ctx.log.copy().size() - before == 6);
 }
 
+TEST_CASE("more layers than shown in a frame: logged once, the rest still works")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	ml::DirectModeComponent dm(120.f, 0);
+
+	Desc desc{64, 64, k_vk_format_r8g8b8a8_srgb, 1};
+	Set set{};
+	dm.CreateSwapTextureSet(1, &desc, &set);
+	vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t eyes[2]{};
+	eyes[0].hTexture = eyes[1].hTexture = set.rSharedTextureHandles[0];
+	eyes[0].bounds = eyes[1].bounds = vr::VRTextureBounds_t{0.f, 0.f, 1.f, 1.f};
+
+	auto overflow_lines = [&] {
+		int n = 0;
+		for (const auto &l : ctx.log.copy()) {
+			n += l.find("more than 4 layers") != std::string::npos;
+		}
+		return n;
+	};
+	for (int frame = 0; frame < 3; frame++) {
+		for (int layer = 0; layer < ml::DirectModeComponent::k_max_layers; layer++) {
+			dm.SubmitLayer(eyes);
+		}
+		dm.Present(0);
+	}
+	CHECK(overflow_lines() == 0); // up to k_max_layers is fine
+	for (int frame = 0; frame < 3; frame++) {
+		for (int layer = 0; layer < ml::DirectModeComponent::k_max_layers + 2; layer++) {
+			dm.SubmitLayer(eyes);
+		}
+		dm.Present(0);
+		dm.PostPresent(nullptr);
+	}
+	CHECK(overflow_lines() == 1);
+}
+
 TEST_CASE("GetFrameTiming clears the reprojection flags")
 {
 	fake::DriverContext ctx;
@@ -279,4 +316,15 @@ TEST_CASE("without an OpenXR session Present doesn't pace through OpenXR: PostPr
 		dm.PostPresent(&throttling);
 	}
 	CHECK(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(25));
+}
+
+TEST_CASE("frame_logged: the first log_frames frames, then every 1200 unless quiet")
+{
+	CHECK(ml::frame_logged(0, 5, false));
+	CHECK(ml::frame_logged(4, 5, false));
+	CHECK_FALSE(ml::frame_logged(5, 5, false));
+	CHECK(ml::frame_logged(2400, 5, false));
+	CHECK(ml::frame_logged(4, 5, true));
+	CHECK_FALSE(ml::frame_logged(2400, 5, true));
+	CHECK_FALSE(ml::frame_logged(0, 0, true));
 }

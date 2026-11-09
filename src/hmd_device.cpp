@@ -48,6 +48,7 @@ get_setting_string(const char *section, const char *key)
 void
 DisplayComponent::GetWindowBounds(int32_t *x, int32_t *y, uint32_t *width, uint32_t *height)
 {
+	std::lock_guard lock(mutex_);
 	*x = 0;
 	*y = 0;
 	*width = config_.render_width * 2;
@@ -57,6 +58,7 @@ DisplayComponent::GetWindowBounds(int32_t *x, int32_t *y, uint32_t *width, uint3
 void
 DisplayComponent::GetRecommendedRenderTargetSize(uint32_t *width, uint32_t *height)
 {
+	std::lock_guard lock(mutex_);
 	*width = config_.render_width;
 	*height = config_.render_height;
 }
@@ -64,6 +66,7 @@ DisplayComponent::GetRecommendedRenderTargetSize(uint32_t *width, uint32_t *heig
 void
 DisplayComponent::GetEyeOutputViewport(vr::EVREye eye, uint32_t *x, uint32_t *y, uint32_t *width, uint32_t *height)
 {
+	std::lock_guard lock(mutex_);
 	*x = eye == vr::Eye_Left ? 0 : config_.render_width;
 	*y = 0;
 	*width = config_.render_width;
@@ -73,6 +76,7 @@ DisplayComponent::GetEyeOutputViewport(vr::EVREye eye, uint32_t *x, uint32_t *y,
 void
 DisplayComponent::GetProjectionRaw(vr::EVREye eye, float *left, float *right, float *top, float *bottom)
 {
+	std::lock_guard lock(mutex_);
 	*left = config_.tan_left[eye];
 	*right = config_.tan_right[eye];
 	*top = config_.tan_top[eye];
@@ -110,8 +114,12 @@ HmdDevice::HmdDevice(const DisplayConfig &display, XrClient *xr)
     : pose_(static_pose()), serial_(get_setting_string(k_main_section, "serial_number")),
       model_(get_setting_string(k_main_section, "model_number")), display_config_(display), display_(display_config_),
       direct_mode_(display_config_.refresh_rate, vr::VRSettings()->GetInt32(k_main_section, "log_frames"), xr,
-                   vr::VRSettings()->GetBool(k_main_section, "early_wait"))
-{}
+                   vr::VRSettings()->GetBool(k_main_section, "early_wait"),
+                   vr::VRSettings()->GetBool(k_main_section, "overlay_layers"))
+{
+	direct_mode_.set_overlay_debug(vr::VRSettings()->GetInt32(k_main_section, "overlay_debug"));
+	direct_mode_.set_upscale(display.fsr_scale < 1.f, display.fsr_sharpness);
+}
 
 vr::EVRInitError
 HmdDevice::Activate(uint32_t object_id)
@@ -213,6 +221,46 @@ HmdDevice::update_eyes(const XrPosef eyes[2])
 	vr::VRServerDriverHost()->SetDisplayEyeToHead(index, display_config_.eye_to_head[0], display_config_.eye_to_head[1]);
 	vr::VRProperties()->SetFloatProperty(vr::VRProperties()->TrackedDeviceToPropertyContainer(index),
 	                                     vr::Prop_UserIpdMeters_Float, ipd);
+}
+
+void
+HmdDevice::update_display(const DisplayConfig &display)
+{
+	{
+		std::lock_guard lock(eyes_mutex_);
+		const bool ipd_known = display_config_.has_eye_to_head;
+		const DisplayConfig keep = display_config_;
+		display_config_ = display;
+		if (ipd_known && !display.has_eye_to_head) { // update_eyes may have come first
+			display_config_.has_eye_to_head = true;
+			display_config_.ipd_meters = keep.ipd_meters;
+			display_config_.eye_to_head[0] = keep.eye_to_head[0];
+			display_config_.eye_to_head[1] = keep.eye_to_head[1];
+		}
+	}
+	display_.set(display_config_);
+	direct_mode_.set_projection_enforced(true);
+	const uint32_t index = device_index_;
+	if (index == vr::k_unTrackedDeviceIndexInvalid) {
+		return; // Activate sends them
+	}
+	vr::HmdRect2_t eye[2];
+	for (int e = 0; e < 2; e++) {
+		eye[e].vTopLeft = {display.tan_left[e], display.tan_top[e]};
+		eye[e].vBottomRight = {display.tan_right[e], display.tan_bottom[e]};
+	}
+	vr::VRServerDriverHost()->SetDisplayProjectionRaw(index, eye[0], eye[1]);
+	vr::VRServerDriverHost()->SetRecommendedRenderTargetSize(index, display.render_width, display.render_height);
+	vr::PropertyContainerHandle_t c = vr::VRProperties()->TrackedDeviceToPropertyContainer(index);
+	vr::VRProperties()->SetFloatProperty(c, vr::Prop_DisplayFrequency_Float, display.refresh_rate);
+	std::lock_guard lock(eyes_mutex_);
+	if (display_config_.has_eye_to_head) {
+		vr::VRServerDriverHost()->SetDisplayEyeToHead(index, display_config_.eye_to_head[0], display_config_.eye_to_head[1]);
+		vr::VRProperties()->SetFloatProperty(c, vr::Prop_UserIpdMeters_Float, display_config_.ipd_meters);
+	}
+	log("HMD display updated from Monado: %ux%u per eye @ %.0f Hz, left eye tan l/r/t/b %.3f/%.3f/%.3f/%.3f",
+	    display.render_width, display.render_height, display.refresh_rate, display.tan_left[0], display.tan_right[0],
+	    display.tan_top[0], display.tan_bottom[0]);
 }
 
 void

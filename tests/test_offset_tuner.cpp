@@ -160,3 +160,63 @@ TEST_CASE("tuning: a stick still deflected when tuning starts must come back to 
 	rig.tick();
 	CHECK(rig.flick(1, true, 1.f).changed);
 }
+
+TEST_CASE("tuning: B asks for a stream reset once per press, only while active")
+{
+	Rig rig;
+	rig.hands[1].upper_click = true;
+	CHECK_FALSE(rig.tick().reset_stream); // not tuning: B is the game's
+	rig.hands[1].upper_click = false;
+	rig.tick();
+	REQUIRE(rig.chord());
+	rig.hands[1].upper_click = true;
+	CHECK(rig.tick().reset_stream);
+	CHECK_FALSE(rig.tick().reset_stream); // held
+	rig.hands[1].upper_click = false;
+	rig.tick();
+	rig.hands[1].upper_click = true;
+	CHECK(rig.tick().reset_stream);
+}
+
+TEST_CASE("tuning: X sets the floor and Y resets it, once per press, only while active")
+{
+	Rig rig;
+	rig.hands[0].lower_click = rig.hands[0].upper_click = true;
+	TunerResult r = rig.tick();
+	CHECK_FALSE(r.floor_from_controller); // not tuning: X and Y are the game's
+	CHECK_FALSE(r.floor_reset);
+	rig.hands[0].lower_click = rig.hands[0].upper_click = false;
+	rig.tick();
+	REQUIRE(rig.chord());
+	rig.hands[0].lower_click = true;
+	r = rig.tick();
+	CHECK(r.floor_from_controller);
+	CHECK_FALSE(r.floor_reset);
+	CHECK(r.suppress);
+	CHECK_FALSE(rig.tick().floor_from_controller); // held
+	rig.hands[0].lower_click = false;
+	rig.hands[0].upper_click = true;
+	r = rig.tick();
+	CHECK(r.floor_reset);
+	CHECK_FALSE(r.floor_from_controller);
+	CHECK_FALSE(r.reset); // A (the offsets) is the right hand's
+}
+
+TEST_CASE("floor_adjust_from_controller: puts the controller on the floor, within 1 m")
+{
+	double adjust = 9.0;
+	// The headset's floor is 12 cm too high: a controller on the real floor reads -0.08 m.
+	REQUIRE(ml::floor_adjust_from_controller(0.0, -0.08, &adjust));
+	CHECK(adjust == doctest::Approx(0.12));
+	// Pressing again with it still there changes nothing.
+	REQUIRE(ml::floor_adjust_from_controller(adjust, ml::k_controller_on_floor_m, &adjust));
+	CHECK(adjust == doctest::Approx(0.12));
+	// Floor too low: the controller reads 0.30 m.
+	REQUIRE(ml::floor_adjust_from_controller(0.0, 0.30, &adjust));
+	CHECK(adjust == doctest::Approx(-0.26));
+	// A controller held at the waist (1 m up): refused, the old value stays.
+	adjust = 0.05;
+	CHECK_FALSE(ml::floor_adjust_from_controller(0.05, 1.2, &adjust));
+	CHECK(adjust == 0.05);
+	CHECK_FALSE(ml::floor_adjust_from_controller(0.0, std::nan(""), &adjust));
+}

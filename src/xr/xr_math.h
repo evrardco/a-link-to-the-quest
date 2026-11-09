@@ -207,6 +207,37 @@ controller_offset(const float position[3], const float rotation_deg[3], bool rig
 	return p;
 }
 
+//! The raw view tangents (OpenVR GetProjectionRaw convention) of a projection matrix built like
+//! OpenVR's (hellovr's ComposeProjection): false if it isn't one.
+inline bool
+tangents_from_projection(const vr::HmdMatrix44_t &m, float *left, float *right, float *top, float *bottom)
+{
+	if (m.m[0][0] == 0.f || m.m[1][1] == 0.f || m.m[3][2] != -1.f) {
+		return false;
+	}
+	const float w = 2.f / m.m[0][0], sx = m.m[0][2] * w; // right - left, right + left
+	const float h = 2.f / m.m[1][1], sy = m.m[1][2] * h; // bottom - top, bottom + top
+	*left = (sx - w) / 2.f;
+	*right = (sx + w) / 2.f;
+	*top = (sy - h) / 2.f;
+	*bottom = (sy + h) / 2.f;
+	return true;
+}
+
+//! Largest difference (in tangent units) between the projection SteamVR rendered a layer with and
+//! Monado's FOV for that eye; false if the matrix isn't an OpenVR projection (nothing to compare).
+inline bool
+projection_difference(const vr::HmdMatrix44_t &m, const XrFovf &fov, float *max_diff)
+{
+	float l, r, t, b, ml, mr, mt, mb;
+	if (!tangents_from_projection(m, &l, &r, &t, &b)) {
+		return false;
+	}
+	projection_from_xr_fov(fov, &ml, &mr, &mt, &mb);
+	*max_diff = std::fmax(std::fmax(std::fabs(l - ml), std::fabs(r - mr)), std::fmax(std::fabs(t - mt), std::fabs(b - mb)));
+	return true;
+}
+
 //! Distance between the two eyes, and whether it's a real IPD (50-80 mm). Monado has reported 0 when
 //! the headset sent no IPD: both eyes at one point, no stereo, and hands looking huge up close.
 inline bool

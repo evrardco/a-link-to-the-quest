@@ -3,9 +3,9 @@
 # (section driver_monadolink). Overrides win over the driver's defaults and survive reinstalls.
 # SteamVR rewrites that file when it exits, so run this with SteamVR closed, then start SteamVR.
 #
-# Usage: monadolink/scripts/setting.sh                      show the current overrides
-#        monadolink/scripts/setting.sh KEY VALUE            e.g. controller_offset_pitch 10
-#        monadolink/scripts/setting.sh KEY --unset          back to the driver's default
+# Usage: a-link-to-the-quest/scripts/setting.sh                      show the current overrides
+#        a-link-to-the-quest/scripts/setting.sh KEY VALUE            e.g. controller_offset_pitch 10
+#        a-link-to-the-quest/scripts/setting.sh KEY --unset          back to the driver's default
 set -euo pipefail
 for f in ~/.local/share/Steam/config/steamvr.vrsettings \
 	~/.var/app/com.valvesoftware.Steam/.local/share/Steam/config/steamvr.vrsettings; do

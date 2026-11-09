@@ -20,6 +20,30 @@ struct DisplayConfig
 	//! Eye poses relative to the head; only passed to SteamVR when known (from Monado).
 	bool has_eye_to_head;
 	vr::HmdMatrix34_t eye_to_head[2];
+	//! FSR (setting fsr_render_scale): render_width/height were scaled by this from Monado's size and
+	//! monadolink upscales back. 1 = rendered at Monado's size.
+	float fsr_scale = 1.f;
+	float fsr_sharpness = 0.2f; //!< RCAS, in stops (setting fsr_sharpness)
 };
+
+//! Setting fsr_render_scale: shrink the render size SteamVR is told (and games render at) by
+//! `scale` (clamped to 0.5..1; 0 or >= 0.99 means off), keeping it even. Returns the scale applied.
+inline float
+apply_render_scale(DisplayConfig *c, float scale)
+{
+	if (!(scale > 0.f) || scale >= 0.99f) {
+		c->fsr_scale = 1.f;
+		return 1.f;
+	}
+	scale = scale < 0.5f ? 0.5f : scale;
+	auto shrink = [&](uint32_t v) {
+		uint32_t s = (uint32_t)((float)v * scale + 0.5f);
+		return s & ~1u;
+	};
+	c->render_width = shrink(c->render_width);
+	c->render_height = shrink(c->render_height);
+	c->fsr_scale = scale;
+	return scale;
+}
 
 } // namespace ml

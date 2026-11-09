@@ -105,3 +105,80 @@ TEST_CASE("distortion is the identity (Monado applies the real lens distortion)"
 	vr::HmdVector2_t out{};
 	CHECK_FALSE(display->ComputeInverseDistortion(&out, vr::Eye_Left, 0, 0.5f, 0.5f));
 }
+
+TEST_CASE("fsr_render_scale shrinks the render size SteamVR is told, keeping it even and clamped")
+{
+	ml::DisplayConfig c{};
+	c.render_width = 1832;
+	c.render_height = 1920;
+	CHECK(ml::apply_render_scale(&c, 0.75f) == doctest::Approx(0.75f));
+	CHECK(c.render_width == 1374);
+	CHECK(c.render_height == 1440);
+	CHECK(c.fsr_scale == doctest::Approx(0.75f));
+
+	ml::DisplayConfig off{};
+	off.render_width = 1001;
+	off.render_height = 999;
+	for (float scale : {0.f, 1.f, 0.995f, 1.5f}) {
+		CHECK(ml::apply_render_scale(&off, scale) == 1.f);
+		CHECK(off.render_width == 1001); // untouched, even when odd
+		CHECK(off.fsr_scale == 1.f);
+	}
+
+	ml::DisplayConfig tiny{};
+	tiny.render_width = 1000;
+	tiny.render_height = 1000;
+	CHECK(ml::apply_render_scale(&tiny, 0.1f) == doctest::Approx(0.5f)); // no lower than half
+	CHECK(tiny.render_width == 500);
+}
+
+#include "vk/fsr.h"
+#include <cstring>
+
+static float
+as_float(uint32_t u)
+{
+	float f;
+	memcpy(&f, &u, sizeof(f));
+	return f;
+}
+
+TEST_CASE("FSR's EASU and RCAS constants come from AMD's setup code")
+{
+	uint32_t con[16];
+	// A 900x960 region of a 1800x1920 image (the game's dynamic resolution), upscaled to 1800x1920.
+	ml::fsr_easu_constants(con, 900.f, 960.f, 1800.f, 1920.f, 1800.f, 1920.f);
+	CHECK(as_float(con[0]) == doctest::Approx(0.5f));          // output pixel -> region pixel scale
+	CHECK(as_float(con[1]) == doctest::Approx(0.5f));
+	CHECK(as_float(con[2]) == doctest::Approx(0.5f * 0.5f - 0.5f)); // half-pixel offset
+	CHECK(as_float(con[4]) == doctest::Approx(1.f / 1800.f)); // region pixel -> normalized in the image
+	CHECK(as_float(con[5]) == doctest::Approx(1.f / 1920.f));
+
+	uint32_t rcas[4];
+	ml::fsr_rcas_constants(rcas, 0.f);
+	CHECK(as_float(rcas[0]) == doctest::Approx(1.f)); // exp2(-sharpness)
+	ml::fsr_rcas_constants(rcas, 1.f);
+	CHECK(as_float(rcas[0]) == doctest::Approx(0.5f));
+}
+
+#include "util/env_file.h"
+#include <unistd.h>
+
+TEST_CASE("read_env_file reads KEY=VALUE lines, skipping comments and trimming quotes")
+{
+	const std::string path = std::string(P_tmpdir) + "/monadolink-test-env-" + std::to_string(getpid());
+	FILE *f = fopen(path.c_str(), "w");
+	REQUIRE(f != nullptr);
+	fputs("# comment\n\nA=1\n  B = two words \nexport C=\"q\"\n=nokey\nbroken line\nD=\n", f);
+	fclose(f);
+	auto m = ml::read_env_file(path);
+	CHECK(m["A"] == "1");
+	CHECK(m["B"] == "two words");
+	CHECK(m["C"] == "q");
+	CHECK(m.count("D") == 1);
+	CHECK(m["D"].empty());
+	CHECK(m.size() == 4);
+	CHECK(ml::read_env_file("/nonexistent/settings.env").empty());
+	CHECK(ml::quest_vr_settings_path("/x.env") == "/x.env");
+	remove(path.c_str());
+}

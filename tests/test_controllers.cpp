@@ -14,6 +14,7 @@
 #include <dlfcn.h>
 #include <functional>
 #include <thread>
+#include <unistd.h>
 
 static FakeXrState *
 fake_runtime_state()
@@ -362,4 +363,40 @@ TEST_CASE("in-headset tuning can be turned off in the settings")
 	CHECK(ctx.input.value(rc, "/input/joystick/click") == 1.f); // the game keeps its sticks
 	ctx.host.added[2].driver->Deactivate();
 	provider.Cleanup();
+}
+
+TEST_CASE("in-headset mode: B touches the file Monado watches for a stream reset")
+{
+	char dir[] = "/tmp/monadolink-test-XXXXXX";
+	REQUIRE(mkdtemp(dir) != nullptr);
+	const std::string trigger = std::string(dir) + "/quest-vr/reset-stream"; // parent created on demand
+
+	fake::DriverContext ctx;
+	ctx.install();
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetString("driver_monadolink", "stream_reset_file", trigger.c_str());
+	FakeXrState *s = fake_runtime_state();
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	ctx.host.added[2].driver->Activate(2);
+
+	s->hands[0].stick_click = s->hands[1].stick_click = true; // enter the in-headset mode
+	REQUIRE(eventually([&] { return s->haptic_calls >= 2; }));
+	s->hands[0].stick_click = s->hands[1].stick_click = false;
+	std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	CHECK(access(trigger.c_str(), F_OK) != 0);
+	s->hands[1].upper_click = true; // B
+	CHECK(eventually([&] { return access(trigger.c_str(), F_OK) == 0; }));
+	s->hands[1].upper_click = false;
+	bool logged = false;
+	for (const auto &l : ctx.log.copy()) {
+		logged |= l.find("Stream reset requested") != std::string::npos;
+	}
+	CHECK(logged);
+
+	ctx.host.added[2].driver->Deactivate();
+	provider.Cleanup();
+	unlink(trigger.c_str());
+	rmdir((std::string(dir) + "/quest-vr").c_str());
+	rmdir(dir);
 }

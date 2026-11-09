@@ -1,0 +1,54 @@
+// Composites SteamVR's layers for one eye into one image (M3): the scene, then each overlay blended
+// over it with straight alpha, like ALVR's Windows compositor. Monado then gets a single projection
+// layer: its multi-layer compute path showed multi-layer frames as a magnified smear on Quest Link.
+//
+// The sources are sampled through their sRGB views (linear values); the output is a linear float
+// image that VkCopier blits into the sRGB swapchain (the blit encodes). When upscaling with FSR
+// (encode = 1) the output is sRGB-encoded instead, at SteamVR's render size: FSR works in perceptual
+// space (fsr_easu.comp, then fsr_rcas.comp decodes).
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int k_max_layers = 4; // VkCopier::k_composite_layers
+
+layout(set = 0, binding = 0) uniform sampler2D layers[k_max_layers];
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D target;
+
+layout(push_constant) uniform Params
+{
+	vec4 rect[k_max_layers]; // u0, v0, u1, v1 in each layer's texture (u1 < u0 flips)
+	int count;
+	int encode; // 1: write sRGB-encoded values (FSR's input)
+	ivec2 size; // the region written (from the top left), 0 = the whole image; FSR's input varies
+	            // with the game's dynamic resolution inside a fixed-size image
+}
+params;
+
+vec3
+srgb_encode(vec3 c)
+{
+	c = clamp(c, 0.0, 1.0);
+	return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, greaterThan(c, vec3(0.0031308)));
+}
+
+void
+main()
+{
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 image = imageSize(target);
+	ivec2 size = params.size.x > 0 ? params.size : image;
+	// One extra row and column past the region repeat its edge: EASU's gathers read one texel beyond.
+	if (p.x >= image.x || p.y >= image.y || p.x > size.x || p.y > size.y) {
+		return;
+	}
+	vec2 uv = (vec2(min(p, size - 1)) + 0.5) / vec2(size);
+
+	vec3 colour = vec3(0.0);
+	for (int i = 0; i < params.count; i++) {
+		vec4 s = texture(layers[i], mix(params.rect[i].xy, params.rect[i].zw, uv));
+		// The scene is opaque (games write anything into alpha, e.g. Source's depth/fog).
+		colour = i == 0 ? s.rgb : mix(colour, s.rgb, s.a);
+	}
+	imageStore(target, p, vec4(params.encode != 0 ? srgb_encode(colour) : colour, 1.0));
+}

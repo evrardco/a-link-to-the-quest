@@ -10,11 +10,16 @@
 	path = external/Vulkan-Headers
 	url = https://github.com/KhronosGroup/Vulkan-Headers.git
 	shallow = true
-[submodule "external/libdrm"]
-	path = external/libdrm
-	url = https://gitlab.freedesktop.org/mesa/drm.git
-	shallow = true
 [submodule "external/doctest"]
 	path = external/doctest
 	url = https://github.com/doctest/doctest.git
+	shallow = true
+[submodule "external/FidelityFX-FSR"]
+	path = external/FidelityFX-FSR
+	url = https://github.com/GPUOpen-Effects/FidelityFX-FSR.git
+	shallow = true
+[submodule "external/monado"]
+	path = external/monado
+	url = https://github.com/evrardco/monado-quest.git
+	branch = oculus-quest-2
 	shallow = true

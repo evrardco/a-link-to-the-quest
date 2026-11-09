@@ -93,13 +93,18 @@ public:
 		SetInt32("driver_monadolink", "log_frames", 0);
 		// Hermetic by default: never reach a real runtime (the tests that want one use the fake runtime).
 		SetString("driver_monadolink", "openxr_runtime_json", "/nonexistent/monadolink-test-runtime.json");
+		// Never the real ~/.cache/quest-vr/openxr_runtime.json either (a running Monado's manifest).
+		SetString("driver_monadolink", "monado_runtime_file", "/nonexistent/monadolink-test-running-runtime.json");
 		SetBool("driver_monadolink", "submit_frames", true);
 		SetBool("driver_monadolink", "early_wait", false);
+		SetBool("driver_monadolink", "overlay_layers", true);
 		SetBool("driver_monadolink", "controllers", true);
 		SetString("driver_monadolink", "controller_input_profile", "{oculus}/input/touch_profile.json");
 		SetFloat("driver_monadolink", "controller_offset_z", -0.08f);
 		SetFloat("driver_monadolink", "controller_offset_pitch", 22.f);
 		SetBool("driver_monadolink", "controller_tuning", true);
+		// Never the real ~/.cache/quest-vr/reset-stream: a running Monado would react to it.
+		SetString("driver_monadolink", "stream_reset_file", "/nonexistent/monadolink-test-reset-stream");
 		SetInt32("monadolink_display", "render_width", 1832);
 		SetInt32("monadolink_display", "render_height", 1920);
 		SetFloat("monadolink_display", "refresh_rate", 120.f);
@@ -263,11 +268,21 @@ public:
 		eye_to_head[1] = right;
 	}
 	void
-	SetDisplayProjectionRaw(uint32_t, const vr::HmdRect2_t &, const vr::HmdRect2_t &) override
-	{}
+	SetDisplayProjectionRaw(uint32_t, const vr::HmdRect2_t &left, const vr::HmdRect2_t &right) override
+	{
+		std::lock_guard lock(mutex); // from the tracking thread (a late Monado connection)
+		projection_left = left;
+		projection_right = right;
+	}
 	void
-	SetRecommendedRenderTargetSize(uint32_t, uint32_t, uint32_t) override
-	{}
+	SetRecommendedRenderTargetSize(uint32_t, uint32_t width, uint32_t height) override
+	{
+		std::lock_guard lock(mutex);
+		render_target_width = width;
+		render_target_height = height;
+	}
+	vr::HmdRect2_t projection_left = {}, projection_right = {};
+	uint32_t render_target_width = 0, render_target_height = 0;
 };
 
 class DriverLog : public vr::IVRDriverLog

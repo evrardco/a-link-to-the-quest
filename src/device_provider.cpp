@@ -1,12 +1,16 @@
 #include "device_provider.h"
 
+#include "util/env_file.h"
 #include "util/log.h"
 #include "util/stderr_capture.h"
 #include "xr/xr_math.h"
 
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace ml {
@@ -23,6 +27,51 @@ get_setting_string(const char *section, const char *key)
 	return buf;
 }
 
+std::string
+monado_socket_path(const std::string &setting)
+{
+	if (!setting.empty()) {
+		return setting;
+	}
+	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+	return std::string(runtime_dir != nullptr && runtime_dir[0] != '\0' ? runtime_dir : "/tmp") + "/monado_comp_ipc";
+}
+
+bool
+unix_socket_listening(const std::string &path)
+{
+	// The kernel's table of bound unix sockets: a stale socket file left by a crashed Monado isn't in
+	// it, and reading it doesn't connect to Monado (which would log a client coming and going).
+	FILE *f = fopen("/proc/net/unix", "r");
+	if (f == nullptr) {
+		return access(path.c_str(), F_OK) == 0;
+	}
+	bool found = false;
+	char line[4096];
+	const std::string suffix = " " + path;
+	while (!found && fgets(line, sizeof(line), f) != nullptr) {
+		size_t n = strlen(line);
+		while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+			line[--n] = '\0';
+		}
+		found = n >= suffix.size() && strcmp(line + n - suffix.size(), suffix.c_str()) == 0;
+	}
+	fclose(f);
+	return found;
+}
+
+std::string
+DeviceProvider::runtime_json()
+{
+	// The running Monado's own manifest (start-monado.sh writes it), else the setting (this project's
+	// host build of the old fork, by default).
+	const std::string running = monado_runtime_file_path(get_setting_string("driver_monadolink", "monado_runtime_file"));
+	if (!running.empty() && access(running.c_str(), R_OK) == 0) {
+		return running;
+	}
+	return get_setting_string("driver_monadolink", "openxr_runtime_json");
+}
+
 vr::EVRInitError
 DeviceProvider::Init(vr::IVRDriverContext *driver_context)
 {
@@ -31,8 +80,8 @@ DeviceProvider::Init(vr::IVRDriverContext *driver_context)
 
 	// SteamVR runs vrserver inside the Steam Linux Runtime container, which doesn't show the host's
 	// whole XDG_RUNTIME_DIR: Monado's client then waits ~20 s for its socket and fails. Say so.
-	const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
-	std::string socket = std::string(runtime_dir != nullptr ? runtime_dir : "/tmp") + "/monado_comp_ipc";
+	monado_socket_ = monado_socket_path(get_setting_string("driver_monadolink", "monado_socket"));
+	const std::string &socket = monado_socket_;
 	if (access(socket.c_str(), F_OK) == 0) {
 		log("Monado socket %s is visible", socket.c_str());
 	} else {
@@ -51,19 +100,62 @@ DeviceProvider::Init(vr::IVRDriverContext *driver_context)
 		StderrCapture capture("OpenXR stderr: ");
 		// submit_frames off = M1 behaviour (headless session, tracking only): a way out if the frame
 		// path (Vulkan, new GPU code) misbehaves.
-		connected = xr_->start(get_setting_string("driver_monadolink", "openxr_runtime_json").c_str(),
-		                       vr::VRSettings()->GetBool("driver_monadolink", "submit_frames"));
+		connected = xr_->start(runtime_json().c_str(), vr::VRSettings()->GetBool("driver_monadolink", "submit_frames"));
 		if (connected) {
 			xr_->apply_display_info(&display);
 		}
 	}
 	if (!connected) {
-		log("Monado not reachable: default display and a static head pose (start Monado and accept Quest "
-		    "Link before SteamVR)");
-		xr_.reset();
+		// It used to give up here for the whole SteamVR session: a headset with no controllers and no
+		// picture (seen 2026-11-09, e.g. when the Quest re-enumerated on USB while Monado started).
+		log("Monado not reachable yet: the HMD shows as not tracking and connects as soon as Monado's socket "
+		    "%s listens (accept Quest Link in the headset)",
+		    socket.c_str());
+		xr_->mark_lost();
+		display_pending_ = true;
 	}
 
+	// FSR: games render smaller than Monado's swapchains, monadolink upscales (VkCopier::composite).
+	display_ = display; // Monado's own size, for comparing after a reconnect
+	// The tray's Settings window (settings.env) wins over steamvr.vrsettings.
+	const std::string tray_path = quest_vr_settings_path(get_setting_string("driver_monadolink", "quest_vr_settings"));
+	const auto tray = read_env_file(tray_path);
+	bool quiet_logs = vr::VRSettings()->GetBool("driver_monadolink", "quiet_logs");
+	if (auto it = tray.find("QUEST_VR_LOGGING"); it != tray.end() && !it->second.empty()) {
+		quiet_logs = it->second == "minimal";
+	}
+	if (quiet_logs) {
+		log("Minimal logging (quiet_logs / QUEST_VR_LOGGING=minimal): no periodic pose and timing lines");
+	}
+	if (xr_) {
+		float scale = vr::VRSettings()->GetFloat("driver_monadolink", "fsr_render_scale");
+		display.fsr_sharpness = vr::VRSettings()->GetFloat("driver_monadolink", "fsr_sharpness");
+		auto tray_float = [&](const char *key, float *out) {
+			auto it = tray.find(key);
+			if (it != tray.end() && !it->second.empty()) {
+				*out = strtof(it->second.c_str(), nullptr);
+				log("%s = %s (from %s)", key, it->second.c_str(), tray_path.c_str());
+			}
+		};
+		tray_float("MONADOLINK_FSR_RENDER_SCALE", &scale);
+		tray_float("MONADOLINK_FSR_SHARPNESS", &display.fsr_sharpness);
+		const uint32_t w = display.render_width, h = display.render_height;
+		scale = apply_render_scale(&display, scale);
+		fsr_scale_ = scale; // for a display that arrives late (reconnect)
+		if (scale < 1.f) {
+			log("FSR: SteamVR renders %ux%u per eye (scale %.2f, sharpness %.2f), upscaled to Monado's %ux%u",
+			    display.render_width, display.render_height, scale, display.fsr_sharpness, w, h);
+		}
+	}
 	hmd_ = std::make_unique<HmdDevice>(display, xr_.get());
+	hmd_->set_quiet_logs(quiet_logs);
+	if (!connected) {
+		vr::DriverPose_t pose = hmd_->GetPose();
+		pose.poseIsValid = false;
+		pose.deviceIsConnected = false;
+		pose.result = vr::TrackingResult_Uninitialized;
+		hmd_->update_pose(pose);
+	}
 	if (!vr::VRServerDriverHost()->TrackedDeviceAdded(hmd_->serial(), vr::TrackedDeviceClass_HMD, hmd_.get())) {
 		log("TrackedDeviceAdded failed for the HMD");
 		hmd_.reset();
@@ -71,10 +163,15 @@ DeviceProvider::Init(vr::IVRDriverContext *driver_context)
 		return vr::VRInitError_Driver_Unknown;
 	}
 
-	// Touch controllers, when Monado gave us controller input.
-	if (xr_ && xr_->input_ready() && vr::VRSettings()->GetBool("driver_monadolink", "controllers")) {
+	// Touch controllers, when Monado gave us controller input (or isn't there yet: they stay inactive
+	// until it is).
+	if (xr_ && (!connected || xr_->input_ready()) && vr::VRSettings()->GetBool("driver_monadolink", "controllers")) {
 		reload_controller_offsets();
 		tuning_enabled_ = vr::VRSettings()->GetBool("driver_monadolink", "controller_tuning");
+		stream_reset_path_ = get_setting_string("driver_monadolink", "stream_reset_file");
+		if (stream_reset_path_.empty() && getenv("HOME") != nullptr) {
+			stream_reset_path_ = std::string(getenv("HOME")) + "/.cache/quest-vr/reset-stream";
+		}
 		const std::string profile = get_setting_string("driver_monadolink", "controller_input_profile");
 		for (int hand = 0; hand < 2; hand++) {
 			std::string serial = std::string(hmd_->serial()) + (hand == k_left ? "_Controller_Left" : "_Controller_Right");
@@ -89,6 +186,8 @@ DeviceProvider::Init(vr::IVRDriverContext *driver_context)
 		log("Controllers added: input profile %s", profile.c_str());
 	}
 
+	const int interval_ms = vr::VRSettings()->GetInt32("driver_monadolink", "reconnect_interval_ms");
+	reconnect_interval_ = std::chrono::milliseconds(interval_ms > 0 ? interval_ms : 2000);
 	if (xr_) {
 		stop_tracking_ = false;
 		tracking_thread_ = std::thread(&DeviceProvider::tracking_loop, this);
@@ -100,6 +199,7 @@ void
 DeviceProvider::tracking_loop()
 {
 	bool reported_loss = false;
+	auto next_reconnect = std::chrono::steady_clock::now();
 	auto next_report = std::chrono::steady_clock::now();
 	auto next_eye_check = next_report;
 	while (!stop_tracking_) {
@@ -115,14 +215,26 @@ DeviceProvider::tracking_loop()
 				next_report += std::chrono::seconds(5);
 			}
 		} else if (xr_->lost() && !reported_loss) {
-			// TODO: reconnect when Monado comes back; for now SteamVR must be restarted.
-			log("Lost Monado: the HMD is now disconnected (restart SteamVR after restarting Monado)");
+			if (!display_pending_) {
+				log("Lost Monado: the HMD is now disconnected; reconnecting when Monado's socket %s is back",
+				    monado_socket_.c_str());
+			}
 			pose = hmd_->GetPose();
 			pose.poseIsValid = false;
 			pose.deviceIsConnected = false;
 			pose.result = vr::TrackingResult_Uninitialized;
 			hmd_->update_pose(pose);
 			reported_loss = true;
+			next_reconnect = std::chrono::steady_clock::now() + reconnect_interval_;
+		} else if (xr_->lost() && std::chrono::steady_clock::now() >= next_reconnect) {
+			next_reconnect = std::chrono::steady_clock::now() + reconnect_interval_;
+			// Only once Monado listens again (it opens the socket after Quest Link is accepted): with no
+			// socket, xrCreateInstance would block this thread for ~20 s.
+			if (unix_socket_listening(monado_socket_)) {
+				if (reconnect()) {
+					reported_loss = false; // tracking resumes: the next pose is valid and connected
+				}
+			}
 		}
 
 		// The IPD can change (or only become known) after Init.
@@ -157,6 +269,55 @@ DeviceProvider::tracking_loop()
 	}
 }
 
+bool
+DeviceProvider::reconnect()
+{
+	log("Monado's socket is back: reconnecting");
+	bool ok;
+	DisplayConfig now = display_;
+	{
+		StderrCapture capture("OpenXR stderr: ");
+		xr_->set_runtime_json(runtime_json()); // Monado may have been restarted from another build
+		ok = xr_->restart();
+		if (ok) {
+			xr_->apply_display_info(&now);
+		}
+	}
+	if (!ok) {
+		log("Reconnecting to Monado failed: trying again in %lld ms", (long long)reconnect_interval_.count());
+		return false;
+	}
+	if (display_pending_) {
+		// First connection, after SteamVR started with the placeholder display: send Monado's.
+		display_pending_ = false;
+		display_ = now;
+		DisplayConfig shown = now;
+		shown.fsr_sharpness = hmd_->display_config().fsr_sharpness;
+		apply_render_scale(&shown, fsr_scale_);
+		hmd_->update_display(shown);
+		log("Connected to Monado after SteamVR started: if the picture looks wrong (stretched, or only part "
+		    "of it), restart SteamVR");
+		if ((controllers_[0] || controllers_[1]) && !xr_->input_ready()) {
+			log("Connected without controller input: the controllers stay inactive");
+		}
+		return true;
+	}
+	// SteamVR keeps the display it read at startup; a different one only scales or crops the image.
+	if (now.render_width != display_.render_width || now.render_height != display_.render_height ||
+	    std::fabs(now.refresh_rate - display_.refresh_rate) > 0.5f) {
+		log("Reconnected, but Monado's display changed (%ux%u at %.0f Hz, was %ux%u at %.0f Hz): restart SteamVR "
+		    "to render for it",
+		    now.render_width, now.render_height, now.refresh_rate, display_.render_width, display_.render_height,
+		    display_.refresh_rate);
+	} else {
+		log("Reconnected to Monado");
+	}
+	if ((controllers_[0] || controllers_[1]) && !xr_->input_ready()) {
+		log("Reconnected without controller input: the controllers stay inactive");
+	}
+	return true;
+}
+
 void
 DeviceProvider::run_tuner(HandState hands[2])
 {
@@ -168,8 +329,9 @@ DeviceProvider::run_tuner(HandState hands[2])
 	const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	const TunerResult t = tuner_.update(hands, now, v);
 	if (t.entered || t.left) {
-		log("Controller offset tuning %s", t.entered ? "on (sticks nudge the offset, A resets, hold both "
-		                                                "sticks clicked again to leave)"
+		log("Controller offset tuning %s", t.entered ? "on (sticks nudge the offset, A resets, B resets the stream, "
+		                                                "X: floor from a controller on the floor, Y: headset floor; "
+		                                                "hold both sticks clicked again to leave)"
 		                                             : "off");
 		// Entering: one long buzz; leaving: a short one.
 		for (int hand = 0; hand < 2; hand++) {
@@ -193,6 +355,22 @@ DeviceProvider::run_tuner(HandState hands[2])
 		std::lock_guard lock(offset_mutex_);
 		reset_requested_ = true;
 	}
+	if (t.reset_stream) {
+		request_stream_reset();
+		for (int hand = 0; hand < 2; hand++) {
+			xr_->haptic((Hand)hand, 0.05f, 0.f, 0.8f);
+		}
+	}
+	if (t.floor_from_controller) {
+		set_floor_from_controllers(hands);
+	}
+	if (t.floor_reset) {
+		xr_->set_floor_adjust_y(0.0);
+		log("Floor height: back to the headset's own floor");
+		for (int hand = 0; hand < 2; hand++) {
+			xr_->haptic((Hand)hand, 0.05f, 0.f, 0.8f);
+		}
+	}
 	if (t.suppress) {
 		for (int hand = 0; hand < 2; hand++) {
 			const HandState s = hands[hand];
@@ -201,6 +379,57 @@ DeviceProvider::run_tuner(HandState hands[2])
 			hands[hand].pose = s.pose;
 		}
 	}
+}
+
+void
+DeviceProvider::set_floor_from_controllers(const HandState hands[2])
+{
+	int low = -1;
+	for (int hand = 0; hand < 2; hand++) {
+		if (hands[hand].active && (low < 0 || hands[hand].pose.vecPosition[1] < hands[low].pose.vecPosition[1])) {
+			low = hand;
+		}
+	}
+	const double old = xr_->floor_adjust_y();
+	double adjust = 0.0;
+	if (low < 0 || !floor_adjust_from_controller(old, hands[low].pose.vecPosition[1], &adjust)) {
+		log("Floor height: not changed (%s)", low < 0 ? "no tracked controller"
+		                                             : "it would move the floor by more than 1 m: is a controller on the floor?");
+		xr_->haptic(low < 0 ? k_left : (Hand)low, 0.5f, 0.f, 1.f); // one long buzz: refused
+		return;
+	}
+	xr_->set_floor_adjust_y(adjust);
+	log("Floor height: from the %s controller at %.3f m, correction %+.3f m (was %+.3f)", low == k_left ? "left" : "right",
+	    hands[low].pose.vecPosition[1], adjust, old);
+	for (int hand = 0; hand < 2; hand++) {
+		xr_->haptic((Hand)hand, 0.05f, 0.f, 0.8f);
+	}
+}
+
+void
+DeviceProvider::request_stream_reset()
+{
+	// Monado watches this file (QL_RESET_TRIGGER, xrsp_check_stream_reset): a new modification time
+	// makes it send a keyframe. Our home folder is visible inside SteamVR's container.
+	const std::string &path = stream_reset_path_;
+	if (path.empty()) {
+		log("Stream reset: no HOME, can't reach Monado's trigger file");
+		return;
+	}
+	// mkdir -p of the parent folders (exists already is fine).
+	for (size_t i = 1; i < path.size(); i++) {
+		if (path[i] == '/') {
+			mkdir(path.substr(0, i).c_str(), 0755);
+		}
+	}
+	FILE *f = fopen(path.c_str(), "w");
+	if (f == nullptr) {
+		log("Stream reset: can't write %s", path.c_str());
+		return;
+	}
+	fprintf(f, "%lld\n", (long long)std::chrono::steady_clock::now().time_since_epoch().count());
+	fclose(f);
+	log("Stream reset requested (%s)", path.c_str());
 }
 
 bool
@@ -271,8 +500,8 @@ DeviceProvider::reload_controller_offsets()
 void
 DeviceProvider::RunFrame()
 {
-	if (hmd_ && !xr_) {
-		hmd_->run_frame(); // no Monado: keep the static pose alive
+	if (hmd_ && (!xr_ || xr_->lost())) {
+		hmd_->run_frame(); // no Monado (yet): keep publishing the last pose (not tracking)
 	}
 
 	// Live controller offset tuning: save what was tuned in the headset, and pick up settings changed

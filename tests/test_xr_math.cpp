@@ -9,6 +9,28 @@ static const XrSpaceLocationFlags k_all_valid =
     XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT |
     XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
 
+TEST_CASE("tangents_from_projection inverts OpenVR's ComposeProjection")
+{
+	const float l = -1.15f, r = 1.0f, t = -1.192f, b = 1.111f, zn = 0.1f, zf = 100.f;
+	vr::HmdMatrix44_t p{};
+	const float idx = 1.f / (r - l), idy = 1.f / (b - t), idz = 1.f / (zf - zn);
+	p.m[0][0] = 2 * idx;
+	p.m[0][2] = (r + l) * idx;
+	p.m[1][1] = 2 * idy;
+	p.m[1][2] = (b + t) * idy;
+	p.m[2][2] = -zf * idz;
+	p.m[2][3] = -zf * zn * idz;
+	p.m[3][2] = -1.f;
+	float L, R, T, B;
+	REQUIRE(ml::tangents_from_projection(p, &L, &R, &T, &B));
+	CHECK(L == doctest::Approx(l));
+	CHECK(R == doctest::Approx(r));
+	CHECK(T == doctest::Approx(t));
+	CHECK(B == doctest::Approx(b));
+	vr::HmdMatrix44_t zero{};
+	CHECK_FALSE(ml::tangents_from_projection(zero, &L, &R, &T, &B)); // not provided
+}
+
 TEST_CASE("a fully tracked location maps 1:1 with velocities")
 {
 	XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};

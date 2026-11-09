@@ -10,7 +10,7 @@ endif()
 
 set(EXTERNAL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external)
 if(NOT EXISTS ${EXTERNAL_DIR}/openvr/headers/openvr_driver.h)
-	message(FATAL_ERROR "Submodules missing: run 'git submodule update --init --depth 1'")
+	message(FATAL_ERROR "Submodules missing: run ./init.sh")
 endif()
 
 # SteamVR expects <driver>/bin/linux64/driver_<driver>.so next to driver.vrdrivermanifest,
@@ -43,6 +43,7 @@ add_library(monadolink_core OBJECT
 	src/controller_device.cpp
 	src/vk/vk_context.cpp
 	src/vk/vk_copy.cpp
+	src/vk/fsr.cpp
 )
 set_target_properties(monadolink_core PROPERTIES
 	POSITION_INDEPENDENT_CODE ON
@@ -54,6 +55,33 @@ target_include_directories(monadolink_core PUBLIC
 	${EXTERNAL_DIR}/openvr/headers         # header only: SteamVR provides the implementations
 	${EXTERNAL_DIR}/Vulkan-Headers/include # libvulkan.so.1 itself is dlopen'ed at run time
 )
+# The layer compositing shader (M3), compiled to SPIR-V at build time into a C array. glslangValidator
+# comes with glslang (Fedora: glslang, which build-monado-fedora.sh installs; Debian: glslang-tools).
+find_program(GLSLANG_VALIDATOR glslangValidator REQUIRED)
+set(MONADOLINK_SHADER_DIR ${CMAKE_BINARY_DIR}/generated)
+add_custom_command(
+	OUTPUT ${MONADOLINK_SHADER_DIR}/composite_comp.h
+	COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1 --vn ml_composite_comp_spv
+		${CMAKE_CURRENT_SOURCE_DIR}/src/vk/composite.comp -o ${MONADOLINK_SHADER_DIR}/composite_comp.h
+	DEPENDS src/vk/composite.comp
+	COMMENT "Compiling composite.comp"
+)
+# FSR 1 upscaling (fsr_render_scale): AMD's headers from the FidelityFX-FSR submodule.
+set(FSR_INCLUDE_DIR ${EXTERNAL_DIR}/FidelityFX-FSR/ffx-fsr)
+foreach(pass easu rcas)
+	add_custom_command(
+		OUTPUT ${MONADOLINK_SHADER_DIR}/fsr_${pass}_comp.h
+		COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1 -I${FSR_INCLUDE_DIR} --vn ml_fsr_${pass}_comp_spv
+			${CMAKE_CURRENT_SOURCE_DIR}/src/vk/fsr_${pass}.comp -o ${MONADOLINK_SHADER_DIR}/fsr_${pass}_comp.h
+		DEPENDS src/vk/fsr_${pass}.comp ${FSR_INCLUDE_DIR}/ffx_a.h ${FSR_INCLUDE_DIR}/ffx_fsr1.h
+		COMMENT "Compiling fsr_${pass}.comp"
+	)
+endforeach()
+add_custom_target(monadolink_shaders DEPENDS ${MONADOLINK_SHADER_DIR}/composite_comp.h
+	${MONADOLINK_SHADER_DIR}/fsr_easu_comp.h ${MONADOLINK_SHADER_DIR}/fsr_rcas_comp.h)
+add_dependencies(monadolink_core monadolink_shaders)
+target_include_directories(monadolink_core PRIVATE ${MONADOLINK_SHADER_DIR} ${FSR_INCLUDE_DIR})
+
 target_compile_options(monadolink_core PRIVATE -Wall -Wextra -Wno-unused-parameter -fno-exceptions
 	-Wno-missing-field-initializers) # the OpenXR idiom: XrFoo foo{XR_TYPE_FOO};
 find_package(Threads REQUIRED)
@@ -150,4 +178,3 @@ if(MONADOLINK_BUILD_TESTS)
 	add_test(NAME monadolink_tests COMMAND monadolink_tests)
 endif()
 
-# Later (see DESIGN.md): drm_fourcc.h from external/libdrm/include/drm (own DMA-BUF images with modifiers).

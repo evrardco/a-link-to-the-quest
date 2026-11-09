@@ -24,6 +24,7 @@ struct FakeXrState
 	XrVector3f linear_velocity = {0.f, 0.f, 0.f};
 	XrVector3f angular_velocity = {0.f, 0.f, 0.f};
 	bool lose_instance = false; //!< next xrPollEvent: INSTANCE_LOSS_PENDING, then calls fail with INSTANCE_LOST
+	bool fail_create_instance = false; //!< xrCreateInstance fails (Monado not there yet)
 
 	// Controllers (indexed by hand: 0 = left, 1 = right)
 	struct Hand

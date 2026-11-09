@@ -23,6 +23,13 @@ class DisplayComponent : public vr::IVRDisplayComponent
 {
 public:
 	explicit DisplayComponent(const DisplayConfig &config) : config_(config) {}
+	//! Monado's display arrived after SteamVR started (HmdDevice::update_display).
+	void
+	set(const DisplayConfig &config)
+	{
+		std::lock_guard lock(mutex_);
+		config_ = config;
+	}
 
 	void
 	GetWindowBounds(int32_t *x, int32_t *y, uint32_t *width, uint32_t *height) override;
@@ -51,6 +58,7 @@ public:
 	}
 
 private:
+	std::mutex mutex_; //!< set() from the tracking thread, the getters from SteamVR's
 	DisplayConfig config_;
 };
 
@@ -60,6 +68,12 @@ public:
 	//! `xr` (may be null) is where frames go; it must outlive the device.
 	explicit HmdDevice(const DisplayConfig &display, XrClient *xr = nullptr);
 	HmdDevice() : HmdDevice(default_display_config()) {}
+	//! Minimal logging for the frame path (DirectModeComponent::set_quiet). Call before Activate.
+	void
+	set_quiet_logs(bool quiet)
+	{
+		direct_mode_.set_quiet(quiet);
+	}
 
 	vr::EVRInitError
 	Activate(uint32_t object_id) override;
@@ -87,6 +101,18 @@ public:
 	//! New eye-in-head poses (IPD change): tells SteamVR (SetDisplayEyeToHead, Prop_UserIpdMeters).
 	void
 	update_eyes(const XrPosef eyes[2]);
+	//! A copy of the display SteamVR was given.
+	DisplayConfig
+	display_config()
+	{
+		std::lock_guard lock(eyes_mutex_);
+		return display_config_;
+	}
+	//! Monado connected after SteamVR started (the HMD has the placeholder display): give SteamVR
+	//! Monado's projection, render size, refresh rate and eye poses, and from now on drop frames
+	//! rendered with another projection (in case SteamVR keeps the old one). Tracking thread.
+	void
+	update_display(const DisplayConfig &display);
 	//! Without Monado: republish the static placeholder pose (from RunFrame).
 	void
 	run_frame();

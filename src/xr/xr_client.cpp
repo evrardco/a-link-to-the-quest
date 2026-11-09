@@ -101,6 +101,8 @@ XrClient::start(const char *runtime_json, bool want_frames)
 {
 	stop();
 	lost_ = false;
+	runtime_json_ = runtime_json != nullptr ? runtime_json : "";
+	want_frames_ = want_frames;
 
 	if (runtime_json != nullptr && runtime_json[0] != '\0') {
 		setenv("XR_RUNTIME_JSON", runtime_json, 1);
@@ -450,7 +452,7 @@ XrClient::locate_head(vr::DriverPose_t *out)
 		}
 		return false;
 	}
-	*out = driver_pose_from_xr(loc, vel, base_offset_y_);
+	*out = driver_pose_from_xr(loc, vel, world_offset_y());
 	if ((loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
 		std::lock_guard lock(head_mutex_);
 		last_head_ = loc.pose;
@@ -477,21 +479,21 @@ XrClient::sync_hands(const XrPosef offset[2], HandState out[2])
 		}
 		return false;
 	}
-	return input_.sync(t, base_space_, base_offset_y_, offset, out);
+	return input_.sync(t, base_space_, world_offset_y(), offset, out);
 }
 
 void
 XrClient::stop()
 {
 	input_.destroy();
-	for (auto &sc : swapchains_) {
-		if (sc != XR_NULL_HANDLE) {
-			xrDestroySwapchain(sc);
-			sc = XR_NULL_HANDLE;
+	for (int layer = 0; layer < k_max_layers; layer++) {
+		for (int eye = 0; eye < 2; eye++) {
+			if (swapchains_[layer][eye] != XR_NULL_HANDLE) {
+				xrDestroySwapchain(swapchains_[layer][eye]);
+				swapchains_[layer][eye] = XR_NULL_HANDLE;
+			}
+			swapchain_images_[layer][eye].clear();
 		}
-	}
-	for (auto &images : swapchain_images_) {
-		images.clear();
 	}
 	if (view_space_ != XR_NULL_HANDLE) {
 		xrDestroySpace(view_space_);
@@ -516,6 +518,32 @@ XrClient::stop()
 	running_ = false;
 	convert_timespec_ = nullptr;
 	get_refresh_rate_ = nullptr;
+	locate_failures_ = 0;
+	std::lock_guard lock(head_mutex_);
+	have_head_ = false; // the pose guard must not compare against the old session's head
+}
+
+bool
+XrClient::restart()
+{
+	std::unique_lock restart_lock(restart_mutex_);
+	{
+		// The submit thread is between frames while we hold this; it sees restarting_ until we're done.
+		std::lock_guard lock(frame_mutex_);
+		restarting_ = true;
+		if (teardown_hook_) {
+			teardown_hook_();
+		}
+		stop();
+	}
+	// Not under frame_mutex_: start() takes it to begin the session.
+	const std::string runtime_json = runtime_json_;
+	const bool ok = start(runtime_json.c_str(), want_frames_);
+	if (!ok) {
+		lost_ = true; // still gone: the tracking thread keeps trying
+	}
+	restarting_ = false;
+	return ok;
 }
 
 bool
@@ -664,6 +692,17 @@ XrClient::create_swapchains()
 		}
 	}
 
+	if (!create_layer_swapchains(0)) {
+		return false;
+	}
+	log("OpenXR: swapchains %ux%u, VkFormat %lld, %zu images", swapchain_width_[0], swapchain_height_[0],
+	    (long long)swapchain_format_, swapchain_images_[0][0].size());
+	return true;
+}
+
+bool
+XrClient::create_layer_swapchains(int layer)
+{
 	for (int eye = 0; eye < 2; eye++) {
 		XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
 		ci.usageFlags = XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
@@ -674,26 +713,42 @@ XrClient::create_swapchains()
 		ci.faceCount = 1;
 		ci.arraySize = 1;
 		ci.mipCount = 1;
-		if (!check(xrCreateSwapchain(session_, &ci, &swapchains_[eye]), "xrCreateSwapchain")) {
-			swapchains_[eye] = XR_NULL_HANDLE;
+		XrSwapchain &sc = swapchains_[layer][eye];
+		if (!check(xrCreateSwapchain(session_, &ci, &sc), "xrCreateSwapchain")) {
+			sc = XR_NULL_HANDLE;
 			return false;
 		}
 		swapchain_width_[eye] = ci.width;
 		swapchain_height_[eye] = ci.height;
 
 		uint32_t n = 0;
-		xrEnumerateSwapchainImages(swapchains_[eye], 0, &n, nullptr);
+		xrEnumerateSwapchainImages(sc, 0, &n, nullptr);
 		std::vector<XrSwapchainImageVulkan2KHR> images(n, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN2_KHR});
-		if (!check(xrEnumerateSwapchainImages(swapchains_[eye], n, &n, (XrSwapchainImageBaseHeader *)images.data()),
+		if (!check(xrEnumerateSwapchainImages(sc, n, &n, (XrSwapchainImageBaseHeader *)images.data()),
 		           "xrEnumerateSwapchainImages")) {
 			return false;
 		}
+		swapchain_images_[layer][eye].clear();
 		for (const auto &img : images) {
-			swapchain_images_[eye].push_back(img.image);
+			swapchain_images_[layer][eye].push_back(img.image);
 		}
 	}
-	log("OpenXR: swapchains %ux%u, VkFormat %lld, %zu images", swapchain_width_[0], swapchain_height_[0],
-	    (long long)swapchain_format_, swapchain_images_[0].size());
+	return true;
+}
+
+bool
+XrClient::ensure_layer(int layer)
+{
+	if (layer < 0 || layer >= k_max_layers) {
+		return false;
+	}
+	if (!swapchain_images_[layer][0].empty() && !swapchain_images_[layer][1].empty()) {
+		return true;
+	}
+	if (!vulkan_ || layer == 0 || !create_layer_swapchains(layer)) {
+		return false;
+	}
+	log("OpenXR: swapchains for layer %d created", layer);
 	return true;
 }
 
@@ -723,55 +778,69 @@ XrClient::begin_frame()
 }
 
 bool
-XrClient::acquire(int eye, uint32_t *index)
+XrClient::acquire(int layer, int eye, uint32_t *index)
 {
 	XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-	if (!check(xrAcquireSwapchainImage(swapchains_[eye], &ai, index), "xrAcquireSwapchainImage")) {
+	if (!check(xrAcquireSwapchainImage(swapchains_[layer][eye], &ai, index), "xrAcquireSwapchainImage")) {
 		return false;
 	}
 	XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
 	wi.timeout = 100'000'000; // 100 ms
-	XrResult r = xrWaitSwapchainImage(swapchains_[eye], &wi);
+	XrResult r = xrWaitSwapchainImage(swapchains_[layer][eye], &wi);
 	if (r != XR_SUCCESS) { // XR_TIMEOUT_EXPIRED is a success code but the image isn't ours
 		check(r == XR_TIMEOUT_EXPIRED ? XR_ERROR_RUNTIME_FAILURE : r, "xrWaitSwapchainImage");
-		release(eye); // acquired: must be released (a release without a wait is allowed to fail)
+		release(layer, eye); // acquired: must be released (a release without a wait is allowed to fail)
 		return false;
 	}
-	return *index < swapchain_images_[eye].size();
+	return *index < swapchain_images_[layer][eye].size();
 }
 
 void
-XrClient::release(int eye)
+XrClient::release(int layer, int eye)
 {
 	XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-	xrReleaseSwapchainImage(swapchains_[eye], &ri);
+	xrReleaseSwapchainImage(swapchains_[layer][eye], &ri);
 }
 
 bool
-XrClient::end_frame(XrTime display_time, const XrPosef *eye_poses)
+XrClient::end_frame(XrTime display_time, const Layer *layers, int count)
 {
-	XrCompositionLayerProjectionView views[2];
-	XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-	const XrCompositionLayerBaseHeader *layers[1] = {(const XrCompositionLayerBaseHeader *)&layer};
+	if (count > k_max_layers) {
+		count = k_max_layers;
+	}
+	XrCompositionLayerProjectionView views[k_max_layers][2];
+	XrCompositionLayerProjection projections[k_max_layers];
+	const XrCompositionLayerBaseHeader *headers[k_max_layers];
+	for (int l = 0; l < count; l++) {
+		for (int eye = 0; eye < 2; eye++) {
+			XrCompositionLayerProjectionView &v = views[l][eye];
+			v = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+			v.pose = layers[l].eye_poses[eye];
+			v.fov = fov_[eye];
+			v.subImage.swapchain = swapchains_[l][eye];
+			v.subImage.imageRect = {{0, 0}, {(int32_t)swapchain_width_[eye], (int32_t)swapchain_height_[eye]}};
+			v.subImage.imageArrayIndex = 0;
+		}
+		XrCompositionLayerProjection &p = projections[l];
+		p = {XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+		// Overlays (SteamVR's compositor layer: dashboard, ...) blend over what's below with their alpha,
+		// which is straight, not premultiplied: in HL2:VR SteamVR always sends its compositor layer on
+		// top of the game's, and with the dashboard closed its pixels are transparent but still carry
+		// colour (a gradient). Blended as premultiplied (OpenXR's default) that colour covered the game.
+		p.layerFlags = layers[l].blend ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+		                                     XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT
+		                               : 0;
+		p.space = base_space_;
+		p.viewCount = 2;
+		p.views = views[l];
+		headers[l] = (const XrCompositionLayerBaseHeader *)&p;
+	}
 
 	XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO};
 	ei.displayTime = display_time;
 	ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-	if (eye_poses != nullptr) {
-		for (int eye = 0; eye < 2; eye++) {
-			views[eye] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-			views[eye].pose = eye_poses[eye];
-			views[eye].fov = fov_[eye];
-			views[eye].subImage.swapchain = swapchains_[eye];
-			views[eye].subImage.imageRect = {{0, 0}, {(int32_t)swapchain_width_[eye], (int32_t)swapchain_height_[eye]}};
-			views[eye].subImage.imageArrayIndex = 0;
-		}
-		layer.space = base_space_;
-		layer.viewCount = 2;
-		layer.views = views;
-		ei.layerCount = 1;
-		ei.layers = layers;
-	}
+	ei.layerCount = (uint32_t)count;
+	ei.layers = count > 0 ? headers : nullptr;
 	return check(xrEndFrame(session_, &ei), "xrEndFrame");
 }
 

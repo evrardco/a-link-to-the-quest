@@ -1,0 +1,52 @@
+// FSR 1 upscaling, pass 1 (EASU, edge-adaptive spatial upsampling): VkCopier's composite at SteamVR's
+// render size -> the OpenXR swapchain's size. AMD's ffx_fsr1.h (external/FidelityFX-FSR), 32-bit path.
+//
+// The input holds sRGB-encoded values (composite.comp encodes when upscaling): FSR wants perceptual
+// space. RCAS (fsr_rcas.comp) decodes back to linear after sharpening.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D target;
+
+layout(push_constant) uniform Params
+{
+	uvec4 con0, con1, con2, con3; // FsrEasuCon (fsr.cpp)
+}
+params;
+
+#define A_GPU 1
+#define A_GLSL 1
+#include "ffx_a.h"
+#define FSR_EASU_F 1
+AF4 FsrEasuRF(AF2 p) { return textureGather(source, p, 0); }
+AF4 FsrEasuGF(AF2 p) { return textureGather(source, p, 1); }
+AF4 FsrEasuBF(AF2 p) { return textureGather(source, p, 2); }
+#include "ffx_fsr1.h"
+
+void
+store(AU2 p)
+{
+	if (any(greaterThanEqual(ivec2(p), imageSize(target)))) {
+		return;
+	}
+	AF3 c;
+	FsrEasuF(c, p, params.con0, params.con1, params.con2, params.con3);
+	imageStore(target, ASU2(p), AF4(c, 1.0));
+}
+
+void
+main()
+{
+	// AMD's pattern: each 64-thread group covers a 16x16 tile, four pixels per thread.
+	AU2 p = ARmp8x8(gl_LocalInvocationID.x) + AU2(gl_WorkGroupID.x << 4u, gl_WorkGroupID.y << 4u);
+	store(p);
+	p.x += 8u;
+	store(p);
+	p.y += 8u;
+	store(p);
+	p.x -= 8u;
+	store(p);
+}

@@ -71,7 +71,7 @@ check_install() {
 if [ "${1:-}" = "--link" ]; then
 	TARGET="$PWD/build/$DRIVER"
 	[ -f "$TARGET/bin/linux64/driver_$DRIVER.so" ] ||
-		{ echo "$TARGET has no driver yet: build it in the sandbox first (ninja -C monadolink/build)." >&2; exit 1; }
+		{ echo "$TARGET has no driver yet: build it in the sandbox first (ninja -C a-link-to-the-quest/build)." >&2; exit 1; }
 	rm -rf "$DEST"
 	ln -s "$TARGET" "$DEST"
 	echo "Linked $DEST -> $TARGET"

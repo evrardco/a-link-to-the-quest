@@ -49,7 +49,27 @@ namespace ml {
 	X(GetBufferMemoryRequirements)                                                                                 \
 	X(BindBufferMemory)                                                                                            \
 	X(MapMemory)                                                                                                   \
-	X(CmdCopyImageToBuffer)
+	X(CmdCopyImageToBuffer)                                                                                        \
+	X(CreateImageView)                                                                                             \
+	X(DestroyImageView)                                                                                            \
+	X(CreateSampler)                                                                                               \
+	X(DestroySampler)                                                                                              \
+	X(CreateDescriptorSetLayout)                                                                                   \
+	X(DestroyDescriptorSetLayout)                                                                                  \
+	X(CreatePipelineLayout)                                                                                        \
+	X(DestroyPipelineLayout)                                                                                       \
+	X(CreateShaderModule)                                                                                          \
+	X(DestroyShaderModule)                                                                                         \
+	X(CreateComputePipelines)                                                                                      \
+	X(DestroyPipeline)                                                                                             \
+	X(CreateDescriptorPool)                                                                                        \
+	X(DestroyDescriptorPool)                                                                                       \
+	X(AllocateDescriptorSets)                                                                                      \
+	X(UpdateDescriptorSets)                                                                                        \
+	X(CmdBindPipeline)                                                                                             \
+	X(CmdBindDescriptorSets)                                                                                       \
+	X(CmdPushConstants)                                                                                            \
+	X(CmdDispatch)
 
 struct VkContext
 {

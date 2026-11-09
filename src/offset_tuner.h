@@ -9,6 +9,10 @@
 //   left stick up/down        forward / back                5 mm
 //   left stick left/right     left / right                  5 mm
 //   A                         back to the defaults
+//   B                         reset the video stream (a fresh keyframe, see DeviceProvider)
+//   X                         floor height from a controller lying on the floor (the lower one):
+//                             fixes your height in games when the headset's floor is off
+//   Y                         back to the headset's own floor
 //
 // Pure logic, no OpenVR: DeviceProvider feeds it the synced hands and applies what it returns.
 #pragma once
@@ -35,6 +39,9 @@ struct TunerResult
 	bool suppress = false; //!< hide this tick's buttons and sticks from the game
 	bool changed = false;  //!< values were nudged
 	bool reset = false;    //!< A: restore the defaults
+	bool reset_stream = false; //!< B: ask Monado for a fresh keyframe
+	bool floor_from_controller = false; //!< X: the lower controller is on the floor
+	bool floor_reset = false;           //!< Y: drop the floor correction
 	bool entered = false, left = false;
 	int step_hand = -1; //!< the hand whose flick made a step (for a haptic tick)
 };
@@ -76,6 +83,9 @@ public:
 					hand[0] = hand[1] = false; // sticks must come back to the centre first
 				}
 				reset_armed_ = false;
+				stream_reset_armed_ = false;
+				floor_armed_ = false;
+				floor_reset_armed_ = false;
 			}
 		}
 		// Also hide the chord's release after leaving, so the game doesn't get stray stick clicks.
@@ -112,6 +122,24 @@ public:
 			reset_armed_ = false;
 			r.reset = true;
 		}
+		if (!right.upper_click) {
+			stream_reset_armed_ = true;
+		} else if (stream_reset_armed_) {
+			stream_reset_armed_ = false;
+			r.reset_stream = true;
+		}
+		if (!left.lower_click) {
+			floor_armed_ = true;
+		} else if (floor_armed_) {
+			floor_armed_ = false;
+			r.floor_from_controller = true;
+		}
+		if (!left.upper_click) {
+			floor_reset_armed_ = true;
+		} else if (floor_reset_armed_) {
+			floor_reset_armed_ = false;
+			r.floor_reset = true;
+		}
 		return r;
 	}
 
@@ -145,6 +173,27 @@ private:
 	bool chord_released_ = true;
 	bool armed_[2][2] = {};
 	bool reset_armed_ = false;
+	bool stream_reset_armed_ = false;
+	bool floor_armed_ = false;
+	bool floor_reset_armed_ = false;
 };
+
+//! Height of a Touch controller's pose (grip + offset) above the floor when it lies on it.
+static constexpr double k_controller_on_floor_m = 0.04;
+//! Largest floor correction accepted: a wrong press (controller not on the floor) can't do worse.
+static constexpr double k_max_floor_adjust_m = 1.0;
+
+//! The floor correction that puts the lowest controller (`lowest_y`, in SteamVR's universe with
+//! `current` applied) at k_controller_on_floor_m. False if it would exceed k_max_floor_adjust_m.
+inline bool
+floor_adjust_from_controller(double current, double lowest_y, double *out)
+{
+	const double adjust = current + (k_controller_on_floor_m - lowest_y);
+	if (!(std::fabs(adjust) <= k_max_floor_adjust_m)) {
+		return false;
+	}
+	*out = std::round(adjust * 1000.0) / 1000.0; // mm
+	return true;
+}
 
 } // namespace ml

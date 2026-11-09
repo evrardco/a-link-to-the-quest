@@ -104,6 +104,9 @@ f_EnumerateInstanceExtensionProperties(const char *layer, uint32_t cap, uint32_t
 static XrResult XRAPI_CALL
 f_CreateInstance(const XrInstanceCreateInfo *info, XrInstance *out)
 {
+	if (S.fail_create_instance) {
+		return XR_ERROR_RUNTIME_UNAVAILABLE;
+	}
 	for (uint32_t i = 0; i < info->enabledExtensionCount; i++) {
 		if (!extension_supported(info->enabledExtensionNames[i])) {
 			return XR_ERROR_EXTENSION_NOT_PRESENT;

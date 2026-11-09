@@ -11,7 +11,11 @@
 #include <ctime>
 #include <dlfcn.h>
 #include <functional>
+#include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <thread>
+#include <unistd.h>
 
 //! Keeps the fake runtime loaded (the loader unloads it with each instance) and resets its state.
 static FakeXrState *
@@ -24,6 +28,28 @@ fake_runtime()
 	*state = FakeXrState{};
 	return state;
 }
+
+//! A listening unix socket standing in for Monado's (the driver only checks that it's there).
+struct FakeMonadoSocket
+{
+	std::string path;
+	int fd = -1;
+	explicit FakeMonadoSocket(const std::string &p) : path(p)
+	{
+		unlink(path.c_str());
+		fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		sockaddr_un addr{};
+		addr.sun_family = AF_UNIX;
+		snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path.c_str());
+		REQUIRE(bind(fd, (sockaddr *)&addr, sizeof(addr)) == 0);
+		REQUIRE(listen(fd, 1) == 0);
+	}
+	~FakeMonadoSocket()
+	{
+		close(fd);
+		unlink(path.c_str());
+	}
+};
 
 static int64_t
 monotonic_ns()
@@ -181,7 +207,50 @@ TEST_CASE("instance loss is noticed and stops tracking")
 	CHECK_FALSE(xr.locate_head(&pose));
 }
 
+TEST_CASE("after a loss, restart() brings the client back with a new instance and calls the teardown hook")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	FakeXrState *s = fake_runtime();
+
+	ml::XrClient xr;
+	int hook_calls = 0;
+	xr.set_teardown_hook([&] { hook_calls++; });
+	REQUIRE(xr.start(FAKE_RUNTIME_JSON));
+	s->lose_instance = true;
+	xr.poll_events();
+	REQUIRE(xr.lost());
+
+	s->lose_instance = false; // Monado is back
+	REQUIRE(xr.restart());
+	CHECK(hook_calls == 1);
+	CHECK_FALSE(xr.lost());
+	CHECK_FALSE(xr.restarting());
+	CHECK(xr.running());
+	CHECK(s->instances == 1); // the old one was destroyed
+	CHECK(s->sessions == 1);
+	vr::DriverPose_t pose{};
+	CHECK(xr.locate_head(&pose));
+	XrPosef head{};
+	CHECK(xr.last_head(&head));
+}
+
+TEST_CASE("unix_socket_listening tells a listening socket from a missing one")
+{
+	const std::string path = std::string(P_tmpdir) + "/monadolink-test-sock-" + std::to_string(getpid());
+	CHECK_FALSE(ml::unix_socket_listening(path));
+	{
+		FakeMonadoSocket sock(path);
+		CHECK(ml::unix_socket_listening(path));
+	}
+	CHECK_FALSE(ml::unix_socket_listening(path));
+	CHECK(ml::monado_socket_path("/x/y") == "/x/y");
+}
+
 // --- DeviceProvider with the fake runtime -----------------------------------------------------------
+
+static bool
+logged(fake::DriverContext &ctx, const char *text);
 
 static bool
 wait_for(const std::function<bool()> &condition)
@@ -244,6 +313,62 @@ TEST_CASE("with a runtime, the HMD reports its display and the tracking thread p
 	CHECK(s->instances == 0);
 }
 
+TEST_CASE("with fsr_render_scale SteamVR is told a smaller render size (monadolink upscales)")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetFloat("driver_monadolink", "fsr_render_scale", 0.75f);
+	fake_runtime();
+
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	auto *hmd = ctx.host.added.at(0).driver;
+	REQUIRE(hmd->Activate(2) == vr::VRInitError_None);
+	uint32_t w = 0, h = 0;
+	static_cast<vr::IVRDisplayComponent *>(hmd->GetComponent(vr::IVRDisplayComponent_Version))
+	    ->GetRecommendedRenderTargetSize(&w, &h);
+	CHECK(w == 1080); // 1440 x 0.75
+	CHECK(h == 1188); // 1584 x 0.75
+	CHECK(logged(ctx, "FSR: SteamVR renders 1080x1188 per eye"));
+	hmd->Deactivate();
+	provider.Cleanup();
+}
+
+TEST_CASE("the tray's settings file (settings.env) overrides the FSR settings")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	const std::string env = std::string(P_tmpdir) + "/monadolink-test-settings-" + std::to_string(getpid()) + ".env";
+	{
+		FILE *f = fopen(env.c_str(), "w");
+		REQUIRE(f != nullptr);
+		fputs("# Quest VR streaming settings\nQL_OVERRIDE_FPS=90\nMONADOLINK_FSR_RENDER_SCALE=0.5\n"
+		      "MONADOLINK_FSR_SHARPNESS=0.6\n",
+		      f);
+		fclose(f);
+	}
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetString("driver_monadolink", "quest_vr_settings", env.c_str());
+	ctx.settings.SetFloat("driver_monadolink", "fsr_render_scale", 0.75f); // the file wins
+	fake_runtime();
+
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	auto *hmd = ctx.host.added.at(0).driver;
+	REQUIRE(hmd->Activate(2) == vr::VRInitError_None);
+	uint32_t w = 0, h = 0;
+	static_cast<vr::IVRDisplayComponent *>(hmd->GetComponent(vr::IVRDisplayComponent_Version))
+	    ->GetRecommendedRenderTargetSize(&w, &h);
+	CHECK(w == 720); // 1440 x 0.5
+	CHECK(h == 792);
+	CHECK(logged(ctx, "sharpness 0.60"));
+	CHECK(logged(ctx, "MONADOLINK_FSR_RENDER_SCALE = 0.5 (from"));
+	hmd->Deactivate();
+	provider.Cleanup();
+	remove(env.c_str());
+}
+
 TEST_CASE("when Monado goes away the HMD is reported disconnected")
 {
 	fake::DriverContext ctx;
@@ -264,6 +389,156 @@ TEST_CASE("when Monado goes away the HMD is reported disconnected")
 
 	provider.Cleanup();
 	CHECK(s->instances == 0);
+}
+
+static bool
+logged(fake::DriverContext &ctx, const char *text)
+{
+	for (const auto &l : ctx.log.copy()) {
+		if (l.find(text) != std::string::npos) {
+			return true;
+		}
+	}
+	return false;
+}
+
+TEST_CASE("when Monado comes back (its socket listens again) the HMD reconnects and tracks again")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	const std::string sock_path = std::string(P_tmpdir) + "/monadolink-test-monado-" + std::to_string(getpid());
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetString("driver_monadolink", "monado_socket", sock_path.c_str());
+	ctx.settings.SetInt32("driver_monadolink", "reconnect_interval_ms", 20);
+	FakeXrState *s = fake_runtime();
+
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	ctx.host.added.at(0).driver->Activate(0);
+	REQUIRE(wait_for([&] { return !ctx.host.poses_copy().empty(); }));
+
+	s->lose_instance = true;
+	REQUIRE(wait_for([&] { return !ctx.host.poses_copy().back().second.deviceIsConnected; }));
+
+	// Monado restarts: the runtime answers again, but until its socket listens nothing is tried
+	// (xrCreateInstance would block for ~20 s against the real Monado).
+	s->lose_instance = false;
+	std::this_thread::sleep_for(std::chrono::milliseconds(150));
+	CHECK(s->instances == 1); // only the lost one, destroyed by the reconnect
+	CHECK_FALSE(logged(ctx, "socket is back"));
+	CHECK_FALSE(ctx.host.poses_copy().back().second.deviceIsConnected);
+
+	{
+		FakeMonadoSocket sock(sock_path);
+		s->head.position = {0.f, 1.55f, 0.f};
+		CHECK(wait_for([&] {
+			auto p = ctx.host.poses_copy().back().second;
+			return p.deviceIsConnected && p.poseIsValid && std::fabs(p.vecPosition[1] - 1.55) < 1e-3;
+		}));
+		CHECK(s->instances == 1);
+		CHECK(logged(ctx, "Reconnected to Monado"));
+
+		// And again: a second loss is noticed and recovered too.
+		s->lose_instance = true;
+		REQUIRE(wait_for([&] { return !ctx.host.poses_copy().back().second.deviceIsConnected; }));
+		s->lose_instance = false;
+		CHECK(wait_for([&] { return ctx.host.poses_copy().back().second.deviceIsConnected; }));
+	}
+
+	provider.Cleanup();
+	CHECK(s->instances == 0);
+}
+
+TEST_CASE("Monado not there when SteamVR starts: it connects later, with controllers and Monado's display")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	const std::string sock_path = std::string(P_tmpdir) + "/monadolink-test-monado3-" + std::to_string(getpid());
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetString("driver_monadolink", "monado_socket", sock_path.c_str());
+	ctx.settings.SetInt32("driver_monadolink", "reconnect_interval_ms", 20);
+	FakeXrState *s = fake_runtime();
+	s->fail_create_instance = true;
+
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	REQUIRE(ctx.host.added.size() == 3); // HMD + both controllers, though nothing is connected
+	CHECK(logged(ctx, "Monado not reachable yet"));
+	auto *hmd = ctx.host.added[0].driver;
+	REQUIRE(hmd->Activate(0) == vr::VRInitError_None);
+	auto *display = (vr::IVRDisplayComponent *)hmd->GetComponent(vr::IVRDisplayComponent_Version);
+	uint32_t w = 0, h = 0;
+	display->GetRecommendedRenderTargetSize(&w, &h);
+	CHECK(w == 1832); // the placeholder from the settings
+	provider.RunFrame();
+	CHECK_FALSE(ctx.host.poses_copy().back().second.deviceIsConnected);
+
+	// Monado comes up: nothing happens until its socket listens.
+	s->fail_create_instance = false;
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	CHECK(s->instances == 0);
+	{
+		FakeMonadoSocket sock(sock_path);
+		CHECK(wait_for([&] {
+			auto p = ctx.host.poses_copy().back().second;
+			return p.deviceIsConnected && p.poseIsValid;
+		}));
+		CHECK(logged(ctx, "Connected to Monado after SteamVR started"));
+		CHECK_FALSE(logged(ctx, "Lost Monado"));
+
+		// SteamVR got Monado's display: render size, projection (left eye: tan of l, r, down, up), refresh.
+		display->GetRecommendedRenderTargetSize(&w, &h);
+		CHECK(w == 1440);
+		CHECK(h == 1584);
+		CHECK(ctx.host.render_target_width == 1440);
+		CHECK(ctx.host.projection_left.vTopLeft.v[0] == doctest::Approx(std::tan(-0.90f)));
+		CHECK(ctx.host.projection_left.vTopLeft.v[1] == doctest::Approx(std::tan(-0.85f)));
+		CHECK(ctx.host.projection_left.vBottomRight.v[1] == doctest::Approx(std::tan(0.80f)));
+		float l, r, t, b;
+		display->GetProjectionRaw(vr::Eye_Left, &l, &r, &t, &b);
+		CHECK(l == doctest::Approx(std::tan(-0.90f)));
+		const auto c = ctx.properties.TrackedDeviceToPropertyContainer(0);
+		CHECK(fake::get_property<float>(ctx.properties, c, vr::Prop_DisplayFrequency_Float) == doctest::Approx(90.f));
+
+		// The controllers are fed now.
+		auto *right = ctx.host.added[2].driver;
+		REQUIRE(right->Activate(2) == vr::VRInitError_None);
+		CHECK(wait_for([&] {
+			for (const auto &[device, pose] : ctx.host.poses_copy()) {
+				if (device == 2 && pose.poseIsValid) {
+					return true;
+				}
+			}
+			return false;
+		}));
+	}
+	provider.Cleanup();
+}
+
+TEST_CASE("a reconnect to a Monado with another display says SteamVR must be restarted to use it")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	const std::string sock_path = std::string(P_tmpdir) + "/monadolink-test-monado2-" + std::to_string(getpid());
+	ctx.settings.SetString("driver_monadolink", "openxr_runtime_json", FAKE_RUNTIME_JSON);
+	ctx.settings.SetString("driver_monadolink", "monado_socket", sock_path.c_str());
+	ctx.settings.SetInt32("driver_monadolink", "reconnect_interval_ms", 20);
+	FakeXrState *s = fake_runtime();
+	FakeMonadoSocket sock(sock_path);
+
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	ctx.host.added.at(0).driver->Activate(0);
+	REQUIRE(wait_for([&] { return !ctx.host.poses_copy().empty(); }));
+
+	s->lose_instance = true;
+	REQUIRE(wait_for([&] { return !ctx.host.poses_copy().back().second.deviceIsConnected; }));
+	s->refresh_rate = 120.f; // restarted with other settings
+	s->lose_instance = false;
+	CHECK(wait_for([&] { return logged(ctx, "Monado's display changed"); }));
+	CHECK(wait_for([&] { return ctx.host.poses_copy().back().second.deviceIsConnected; }));
+
+	provider.Cleanup();
 }
 
 // --- Runtime selection ---------------------------------------------------------------------------
@@ -390,4 +665,36 @@ TEST_CASE("an IPD change after Init reaches SteamVR (eye-to-head and the IPD pro
 
 	hmd->Deactivate();
 	provider.Cleanup();
+}
+
+TEST_CASE("the running Monado's manifest (written by start-monado.sh) wins over the setting, also on reconnects")
+{
+	fake::DriverContext ctx;
+	ctx.install();
+	const std::string running = std::string(P_tmpdir) + "/monadolink-test-running-" + std::to_string(getpid()) + ".json";
+	const std::string sock_path = std::string(P_tmpdir) + "/monadolink-test-monado4-" + std::to_string(getpid());
+	unlink(running.c_str());
+	ctx.settings.SetString("driver_monadolink", "monado_runtime_file", running.c_str());
+	ctx.settings.SetString("driver_monadolink", "monado_socket", sock_path.c_str());
+	ctx.settings.SetInt32("driver_monadolink", "reconnect_interval_ms", 20);
+	FakeXrState *s = fake_runtime();
+
+	// The setting names nothing usable; the running file doesn't exist yet: not connected.
+	ml::DeviceProvider provider;
+	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
+	CHECK(logged(ctx, "Monado not reachable yet"));
+	ctx.host.added.at(0).driver->Activate(0);
+
+	// start-monado.sh writes its tree's manifest, Monado listens: the reconnect uses that manifest.
+	{
+		std::ifstream src(FAKE_RUNTIME_JSON, std::ios::binary);
+		std::ofstream(running, std::ios::binary) << src.rdbuf();
+	}
+	FakeMonadoSocket sock(sock_path);
+	CHECK(wait_for([&] { return ctx.host.poses_copy().back().second.deviceIsConnected; }));
+	CHECK(logged(ctx, ("runtime manifest " + running).c_str()));
+	CHECK(s->instances == 1);
+
+	provider.Cleanup();
+	unlink(running.c_str());
 }

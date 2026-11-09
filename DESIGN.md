@@ -41,10 +41,9 @@ All third-party code lives in **git submodules under `external/<name>`** (shallo
 
 | Submodule | Pinned at | Why we need it | Licence |
 |---|---|---|---|
-| `external/openvr` | v2.15.6 | `openvr_driver.h`: the driver interfaces SteamVR loads (`IServerTrackedDeviceProvider_004`, `ITrackedDeviceServerDriver_005`, `IVRDisplayComponent_003`, `IVRDriverDirectModeComponent_009`, `IVRIPCResourceManagerClient_003`, `IVRDriverInput_004`). Header only; SteamVR provides the implementations at runtime. Also has Valve's sample drivers (`samples/drivers/drivers/simplehmd`). | BSD-3 |
+| `external/openvr` | v2.15.6 | `openvr_driver.h`: the driver interfaces SteamVR loads (`IServerTrackedDeviceProvider_004`, `ITrackedDeviceServerDriver_005`, `IVRDisplayComponent_003`, `IVRDriverDirectModeComponent_009`, `IVRIPCResourceManagerClient_003`, `IVRDriverInput_004`). Header only; SteamVR provides the implementations at runtime (`libopenvr_api.so` for the `monadolink_tune` client). Sparse checkout (`init.sh`): `headers`, `lib/linux64`, `bin/linux64` (17 MB instead of ~500 MB with the samples). | BSD-3 |
 | `external/OpenXR-SDK` | release-1.1.65 | M1+: headers, and the loader built **statically** into the driver so nothing extra is needed inside the Steam Linux Runtime. Finds Monado through `active_runtime.json` / `XR_RUNTIME_JSON`. | Apache-2.0 |
 | `external/Vulkan-Headers` | main (shallow) | M2+: headers for importing SteamVR's DMA-BUF textures (`VK_KHR_external_memory_fd`, `VK_EXT_external_memory_dma_buf`, `VK_EXT_image_drm_format_modifier`, `VK_KHR_external_semaphore_fd`, timeline semaphores). The Vulkan *loader* stays the system `libvulkan` (it must match the installed GPU drivers). | Apache-2.0 / MIT |
-| `external/libdrm` | main (shallow) | M2+: `include/drm/drm_fourcc.h` (DRM fourcc and modifier constants for `DmabufAttributes_t`). | MIT |
 | `external/doctest` | v2.5.0 | Unit tests (single header). | MIT |
 
 Build-time only, later: **glslang** if we ever composite layers in a compute shader.
@@ -62,10 +61,10 @@ Deliberately *not* used:
 `[x]` = exists (M0), `[ ]` = planned.
 
 ```
-monadolink/                    its own git repo (inside the oculus-quest-2 project folder)
+a-link-to-the-quest/           its own git repo (inside the oculus-quest-2 project folder)
 ├── DESIGN.md                  this file
 ├── CMakeLists.txt             [x] option MONADOLINK_BUILD_TESTS (ON by default)
-├── external/                  [x] git submodules: openvr, OpenXR-SDK, Vulkan-Headers, libdrm, doctest
+├── external/                  [x] git submodules: openvr, OpenXR-SDK, Vulkan-Headers, doctest, FidelityFX-FSR, monado
 ├── driver/                    [x] copied as-is into build/monadolink (= the SteamVR driver folder)
 │   ├── driver.vrdrivermanifest
 │   └── resources/
@@ -143,7 +142,7 @@ The object library `monadolink_core` holds all driver code; both `driver_monadol
 | M0 | Driver loads; a "Monado Link" HMD appears in SteamVR (static pose, no display); direct-mode calls logged with pid/tid — **verified 2026-10-28: the HMD appears in SteamVR (host, RPM Steam, SteamVR 2.18.4)**; direct-mode path confirmed in `vrserver` (see open questions) | manifest, factory, properties, which process calls direct mode |
 | M1 | Head tracking from Monado moves SteamVR's view — **implemented 2026-10-28, host test pending** | OpenXR session inside vrserver, time conversion |
 | M2 | SteamVR Home visible in the headset (single layer, one copy) — **verified 2026-10-29** | direct mode, DMA-BUF import, OpenXR submit |
-| M3 | Dashboard over games, correct sub-rectangles, no right-eye stutter | multi-layer, bounds, sync |
+| M3 | Dashboard over games, correct sub-rectangles, no right-eye stutter — **verified 2026-10-29** (HL2:VR's menu items, composited by monadolink) | multi-layer, bounds, sync |
 | M4 | Touch controllers: buttons, sticks, poses, haptics — **verified 2026-10-29** (SteamVR controller test, HL2:VR played; offset tuning pending) | OpenXR actions ⇄ IVRDriverInput |
 | M5 | Pacing/latency tuning at 120 Hz — the user still feels some latency (2026-10-29). Candidates: VAAPI async_depth 2 (+1 frame; retest 1 now that the keyframe stalls are gone), the OpenXR frame blocking SteamVR's submit thread (~7.5 ms in xrWaitFrame; SteamVR predicts ~22 ms ahead), double prediction (SteamVR + Monado ~10 ms). Measure with the timing line first. Step 1: early wait (see M5 decisions). | GetFrameTiming, PostPresent throttling |
 | M6 | `install.sh`, Flatpak Steam notes, HL2:VR test | packaging, the 32-bit win |
@@ -161,8 +160,22 @@ The object library `monadolink_core` holds all driver code; both `driver_monadol
 - **Display from Monado** at Init, before the HMD is added: render size =
   `recommendedImageRect` (larger eye), FOV from `xrLocateViews` in VIEW space, eye-to-head poses →
   `SetDisplayEyeToHead` + `Prop_UserIpdMeters`, refresh from `xrGetDisplayRefreshRateFB`.
-- **Without Monado** at Init: settings defaults and the M0 static pose (SteamVR still runs). If Monado
-  goes away later, the HMD is reported disconnected; **no reconnect yet** (restart SteamVR).
+- **Without Monado** at Init (2026-11-09; it used to give up for the session: a headset with no
+  controllers and no picture): settings defaults, the HMD reported not tracking, the controllers added
+  (inactive), and the same reconnect path as below once the socket listens. On that first connection
+  `HmdDevice::update_display` sends Monado's display (`SetDisplayProjectionRaw`,
+  `SetRecommendedRenderTargetSize`, `Prop_DisplayFrequency_Float`, eye poses) and turns on the
+  **projection guard**: frames whose `mProjection` differs from Monado's FOV by more than 0.02 in
+  tangent are dropped (a wrong FOV stretches the world); otherwise mismatches are only logged. If
+  Monado goes away later, the HMD is reported disconnected, and **reconnects** when Monado is back
+  (2026-10-30): the tracking thread checks every `reconnect_interval_ms` (2000) whether Monado's
+  socket (`monado_socket`, default `$XDG_RUNTIME_DIR/monado_comp_ipc`) listens in `/proc/net/unix`
+  (no connect, and no `xrCreateInstance` that would block ~20 s without Monado), then
+  `XrClient::restart()`: under the frame mutex a teardown hook drops direct mode's Vulkan copier
+  (its imports live on the device being destroyed; SteamVR's textures are re-imported from the fds
+  we keep), then a new instance/session. The submit thread only `try_lock`s the frame mutex, so
+  SteamVR paces itself meanwhile; haptics skip during a restart. SteamVR keeps the display it read
+  at Init: a Monado restarted with another resolution/refresh is logged ("restart SteamVR").
 - Setting `driver_monadolink/openxr_runtime_json`: exported as `XR_RUNTIME_JSON` before the loader
   runs. **Required in practice**: inside vrserver the default runtime is SteamVR's own (see
   Containers below); `install.sh` fills in this project's Monado manifest.
@@ -190,12 +203,15 @@ The object library `monadolink_core` holds all driver code; both `driver_monadol
   into Monado-sized swapchains (1926×2015).
 - **Poses**: the layer gets SteamVR's render pose (`mHmdPose`) ∘ Monado's eye-in-head poses, in the
   base space; Monado's compositor reprojects to the latest pose.
-- **Only the first layer** is shown (M3: all layers).
+- ~~Only the first layer is shown~~ (M3 shows all layers).
 - Diagnostics in vrserver.txt on logged frames (first `log_frames`, then every 1200): RGBA of SteamVR's
   left texture at its centre and quarter points, read in the copy's own submit — tells a flat image
   rendered by SteamVR from one produced by our copy. First host run (2026-10-28): 1199/1200 frames
   shown at 120 Hz, the user saw a uniform-colour void; quitting Monado first → INSTANCE_LOST handled,
   HMD reported disconnected, SteamVR kept running.
+- Minimal logging (setting `quiet_logs`, or the tray's Logging = Minimal: `QUEST_VR_LOGGING=minimal`
+  in settings.env): only the first `log_frames` frames and problems are logged; no once-a-second pose
+  and timing lines, no timing statistics, no diagnostic readbacks every 1200/121 frames.
 - **Pose guard** (after the 2026-10-28 SteamVR Home test, where the scene showed but didn't follow the
   head and made the user sick): each frame, the rotation between SteamVR's render pose (`mHmdPose`)
   and the latest tracked head pose must be ≤ 20°, else the frame is dropped (black) instead of
@@ -245,11 +261,63 @@ The object library `monadolink_core` holds all driver code; both `driver_monadol
   both thumbsticks clicked 1 s to enter/leave (long buzz / short buzz). While tuning, the game gets
   no buttons or sticks (poses still flow, so the gun visibly moves); one step per stick flick, a
   haptic tick each: right stick = pitch/yaw (1°), + right grip = height (5 mm)/roll, left stick =
-  forward-back/sideways (5 mm), A = defaults. Directions are as seen from the right hand (the left
+  forward-back/sideways (5 mm), A = defaults, B = reset the video stream (touches the file Monado
+  watches, `stream_reset_file`, default ~/.cache/quest-vr/reset-stream: Monado sends a keyframe),
+  X = floor height from the lower controller lying on the floor (its pose put at 4 cm; refused with a
+  long buzz beyond ±1 m), Y = back to the headset's floor. The floor correction is an atomic in
+  XrClient added to `world_offset_y()` (head, controllers and the submitted eye poses all use it),
+  kept across Monado reconnects, not saved. Directions are as seen from the right hand (the left
   mirrors). The tracking thread applies steps at once; RunFrame writes them with
   IVRSettings::SetFloat (A: RemoveKeyInSection), and the 0.5 s reload skips while unsaved steps
   are pending so it can't undo them.
 - Haptics: `VREvent_Input_HapticVibration` (RunFrame) → `xrApplyHapticFeedback` on that hand.
+
+## M3 decisions
+
+- **Overlays are composited by monadolink** (since 2026-10-29; setting `overlay_layers`, default
+  true; false = the scene layer only, like ALVR's Linux driver). `VkCopier::composite` runs
+  `src/vk/composite.comp` per eye: it samples the scene and each overlay through their sRGB views,
+  blends the overlays with straight alpha (the scene opaque: Source writes depth/fog into alpha),
+  writes a linear RGBA16F image, and blits it into the scene's swapchain image (the blit encodes
+  sRGB). Monado gets **one** projection layer, with the scene's pose, so it stays on its one-layer
+  fast path. Like ALVR's Windows compositor; no per-layer reprojection yet (SteamVR renders its
+  overlay layer for nearly the same pose). The shader is compiled at build time with
+  glslangValidator into `build/generated/composite_comp.h`. The GPU self-test checks transparent,
+  opaque and 50% overlays (linear-light mix) and the scene alone. If compositing fails once, the
+  scene alone is shown from then on (logged). **Verified on the host 2026-10-29**: HL2:VR's menu
+  renders in the headset, the game looks normal; copy step 0.3-0.5 ms per frame with compositing.
+- Why it matters: HL2:VR draws its own menu items through SteamVR's overlay layer (visible on the
+  desktop mirror, missing in the headset with the scene layer only). With the menu closed HL2
+  submits 2 layers: the game's own textures (VkFormat 50) and SteamVR's compositor layer
+  (transparent there); with the SteamVR dashboard open SteamVR submits 1 composited layer.
+- `overlay_debug` (debug): 1 = copy every layer into its own swapchain set but submit the scene; 2 =
+  submit separate layers to Monado (for debugging its multi-layer path).
+- **Monado's multi-layer compute path zooms the bottom layer** (open bug): with both HL2 layers
+  submitted, the game appeared hugely magnified ("a gradient of two colours, a sudden jump looking
+  down"). `overlay_debug = 1` (copy both layers, submit only the scene) looked normal, so our copy
+  is fine and the difference is Monado's layer-squash path (`do_layers` + `do_distortion` in
+  comp_renderer.c) vs its one-layer fast path. Ruled out by reading: blending (no_alpha view, alpha
+  forced 1 after distortion), per-layer FOV (SteamVR's `mProjection` equals Monado's FOV), UBO
+  layout, scratch viewports, uv helpers, timewarp math (identical in both shaders). The fork
+  commented out an assert in `render_compute_layers` (`assert(w != 0 && h != 0); //TODO TODO HACK`),
+  a hint the path was never finished for Quest Link. Also fixed on the way (didn't cure it): the
+  layer pass's final barrier ended at TOP_OF_PIPE, so the distortion pass didn't wait for the
+  scratch image. QL_COMPOSITOR_DEBUG=1 logs both paths' shader inputs: identical apart from the
+  scratch size. Worked around by compositing in monadolink (above).
+
+- **Every SteamVR layer → its own OpenXR projection layer** (up to 4: the scene, then overlays such
+  as the dashboard or keyboard), each with the pose SteamVR rendered it with; Monado composites
+  them. Overlays carry `BLEND_TEXTURE_SOURCE_ALPHA` + `UNPREMULTIPLIED_ALPHA`: SteamVR's layers use
+  straight alpha. Found in HL2:VR (2026-10-29): there SteamVR sends **2 layers on every frame**, the
+  game's own textures (VkFormat 50, B8G8R8A8_SRGB, straight from the game) and its compositor layer
+  on top; with the dashboard closed that layer is transparent but still carries colour, which as
+  premultiplied covered the game with a gradient. SteamVR Home: 1 layer.
+- Swapchains per layer: layer 0 at start, the others created on first use (`ensure_layer`, on the
+  submit thread under the frame lock). Shown layers are compacted: an overlay whose textures can't
+  be imported is skipped, the scene can't be. More than 4 layers: the extra ones are dropped (logged
+  once); "SteamVR submits N layers per frame now" is logged when the count grows.
+- One copy submission for all layers (`VkCopier::k_max_blits` = 8; the GPU self-test copies 8 blits
+  into 8 images). The pose guard checks the scene layer.
 
 ## M5 decisions
 
@@ -296,6 +364,37 @@ The object library `monadolink_core` holds all driver code; both `driver_monadol
 - Older note — next candidates were: VAAPI async_depth 1 (`QL_VAAPI_ASYNC_DEPTH=1`, −1 frame; its periodic stalls may
   be gone with the keyframes), and matching SteamVR's prediction to the real photon time (vsync to
   photons / pose time offsets) once the timing line shows the mismatch.
+
+## FSR upscaling (2026-10-30)
+
+- **Why in the driver:** game-side upscalers are per game and per graphics API (vrperfkit: D3D11
+  only, Windows); every game's frame reaches us, whatever its API, so one implementation covers all.
+- **Setting `fsr_render_scale`** (default 1 = off, clamped to 0.5..1): the HMD reports Monado's
+  recommended size × scale (`apply_render_scale`), so the game and SteamVR's compositor render fewer
+  pixels. SteamVR still multiplies by its own render resolution (auto picked 1.236 here): set it to
+  100% so the scale means what it says. Needs a SteamVR restart. **The tray's Settings window**
+  sets both (`MONADOLINK_FSR_RENDER_SCALE`, `MONADOLINK_FSR_SHARPNESS` in
+  `~/.config/quest-vr/settings.env`, read at Init: they win over steamvr.vrsettings; setting
+  `quest_vr_settings` moves the file).
+- **The GPU path** (`VkCopier::composite`, used for every frame while upscaling, the scene alone
+  too): composite.comp at the scene's size, sRGB-encoded (FSR wants perceptual space) -> AMD's
+  FSR 1 EASU (`fsr_easu.comp`) to the swapchain's size -> RCAS (`fsr_rcas.comp`, setting
+  `fsr_sharpness` in stops, 0 = sharpest, default 0.2) decoding to linear -> the blit into the sRGB
+  swapchain. 32-bit float path; AMD's headers in `external/FidelityFX-FSR` (MIT), constants from
+  their CPU half (`fsr.cpp`). If its pipelines can't be created the composite goes on without it,
+  and if compositing fails the plain blit stretches bilinearly.
+- **Dynamic resolution** (first host run, 2026-10-30, HL2:VR): SteamVR/the game shrink the scene's
+  bounds under load (u/v 0..0.869 seen). FSR first ran only when the bounds were smaller than the
+  swapchain and sized its input image to them: frames alternated between sharpened and plain, and
+  the images were reallocated as the bounds changed (dropped frames). Now FSR runs on every frame
+  while on (1:1 + RCAS when the scene is large enough), its input image is swapchain-sized and the
+  bounds are a region in it (EASU's viewport-vs-size constants), the composite repeating the
+  region's edge one texel beyond for EASU's gathers.
+- **Trade-off:** it upscales SteamVR's composited frame, not the game's eye image: overlays are
+  upscaled too and SteamVR's resample comes first. In exchange: every game and API.
+- Tests: unit tests (render size, constants); GPU checks in `monadolink_vk_selftest` (flat colour
+  within 1, sRGB round trip, a smaller region after a full frame, 1:1 pass): passed on the RX 6700 XT
+  2026-10-30.
 
 ## Open questions / risks
 

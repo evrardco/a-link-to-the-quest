@@ -4,9 +4,13 @@
 		"serial_number": "MONADOLINK-0001",
 		"model_number": "Monado Link",
 		"log_frames": 5,
+		"quiet_logs": false,
 		"openxr_runtime_json": "@MONADOLINK_OPENXR_RUNTIME_JSON@",
+		"monado_runtime_file": "",
 		"submit_frames": true,
 		"early_wait": false,
+		"overlay_layers": true,
+		"overlay_debug": 0,
 		"controllers": true,
 		"controller_input_profile": "{oculus}/input/touch_profile.json",
 		"controller_offset_x": 0.0,
@@ -15,7 +19,13 @@
 		"controller_offset_pitch": 22.0,
 		"controller_offset_yaw": 0.0,
 		"controller_offset_roll": 0.0,
-		"controller_tuning": true
+		"controller_tuning": true,
+		"stream_reset_file": "",
+		"monado_socket": "",
+		"reconnect_interval_ms": 2000,
+		"fsr_render_scale": 1.0,
+		"fsr_sharpness": 0.2,
+		"quest_vr_settings": ""
 	},
 	"monadolink_display": {
 		"render_width": 1832,

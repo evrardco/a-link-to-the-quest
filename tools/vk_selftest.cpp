@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 using namespace ml;
@@ -127,6 +128,18 @@ read_pixels(VkImage image, uint32_t w, uint32_t h, std::vector<uint8_t> *out)
 	out->assign((uint8_t *)p, (uint8_t *)p + bci.size);
 	DestroyBuffer(vk.device, buf, nullptr);
 	vk.FreeMemory(vk.device, mem, nullptr);
+}
+
+//! Like pixel_is, within `tol` per channel (FSR's half-float passes and sRGB round trip round by 1).
+static bool
+pixel_near(const std::vector<uint8_t> &px, uint32_t w, uint32_t x, uint32_t y, uint8_t r, uint8_t g, uint8_t b, int tol)
+{
+	const uint8_t *p = &px[((size_t)y * w + x) * 4];
+	if (std::abs(p[0] - r) > tol || std::abs(p[1] - g) > tol || std::abs(p[2] - b) > tol) {
+		printf("      pixel (%u,%u) = %u,%u,%u, want %u,%u,%u (+-%d)\n", x, y, p[0], p[1], p[2], r, g, b, tol);
+		return false;
+	}
+	return true;
 }
 
 static bool
@@ -301,7 +314,7 @@ main()
 		expect(pixel_is(px, dw, 3, 3, 0, 0, 255), "flipped half arrives (blue)");
 
 		// The diagnostic texel samples read the source (blue now).
-		expect(copier.copy(&blit, 1, true), "copy with texel samples");
+		expect(copier.copy(&blit, 1, 0), "copy with texel samples");
 		const auto &smp = copier.samples();
 		expect(smp[0][0] == 0 && smp[0][1] == 0 && smp[0][2] == 255 && smp[4][2] == 255, "samples read the source");
 
@@ -309,7 +322,185 @@ main()
 		VkCopier::Blit two[2] = {blit, blit};
 		expect(copier.copy(two, 2), "copy both eyes from the same texture");
 
-		printf("info: DMA-BUF write-fence waits used: %llu of 5 copies\n", (unsigned long long)copier.fence_waits());
+		// M3: the most blits per copy (4 layers x 2 eyes), each into its own image like swapchains.
+		{
+			VkImage dsts[VkCopier::k_max_blits];
+			VkDeviceMemory mems[VkCopier::k_max_blits];
+			VkCopier::Blit many[VkCopier::k_max_blits];
+			for (int i = 0; i < VkCopier::k_max_blits; i++) {
+				CHECK_VK(vk.CreateImage(vk.device, &dst_ci, nullptr, &dsts[i]));
+				mems[i] = bind_memory(dsts[i], false);
+				run([&] { barrier(dsts[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); });
+				many[i] = blit;
+				many[i].dst = dsts[i];
+			}
+			expect(copier.copy(many, VkCopier::k_max_blits), "copy the most blits at once (4 layers x 2 eyes)");
+			bool all_blue = true;
+			for (int i = 0; i < VkCopier::k_max_blits; i++) {
+				read_pixels(dsts[i], dw, dh, &px);
+				all_blue = all_blue && pixel_is(px, dw, 3, 3, 0, 0, 255);
+			}
+			expect(all_blue, "every destination got the picture");
+			for (int i = 0; i < VkCopier::k_max_blits; i++) {
+				vk.DestroyImage(vk.device, dsts[i], nullptr);
+				vk.FreeMemory(vk.device, mems[i], nullptr);
+			}
+		}
+
+		// M3: compositing an overlay (a second imported texture) over the scene (blue now).
+		{
+			VkImage ov;
+			CHECK_VK(vk.CreateImage(vk.device, &src_ci, nullptr, &ov));
+			VkDeviceMemory ov_mem = bind_memory(ov, true);
+			VkImageLayout ov_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+			auto fill_ov = [&](float r, float g, float b, float a) {
+				run([&] {
+					barrier(ov, ov_layout, VK_IMAGE_LAYOUT_GENERAL);
+					VkClearColorValue c{};
+					c.float32[0] = r;
+					c.float32[1] = g;
+					c.float32[2] = b;
+					c.float32[3] = a;
+					VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+					CmdClearColorImage(cmd, ov, VK_IMAGE_LAYOUT_GENERAL, &c, 1, &range);
+				});
+				ov_layout = VK_IMAGE_LAYOUT_GENERAL;
+			};
+			fill_ov(1.f, 0.f, 0.f, 0.f); // red, fully transparent
+			VkMemoryGetFdInfoKHR ofi{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+			ofi.memory = ov_mem;
+			ofi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+			int ofd = -1;
+			CHECK_VK(GetMemoryFdKHR(vk.device, &ofi, &ofd));
+			expect(copier.import(43, ofd, VK_FORMAT_R8G8B8A8_SRGB, sw, sh), "import the overlay texture");
+
+			VkCopier::CompositeEye eyes[2] = {};
+			for (auto &e : eyes) {
+				e.count = 2;
+				e.src[0] = 42;
+				e.src[1] = 43;
+				for (int l = 0; l < 2; l++) {
+					e.rect[l][0] = 0.f;
+					e.rect[l][1] = 0.f;
+					e.rect[l][2] = 1.f;
+					e.rect[l][3] = 1.f;
+				}
+				e.dst = dst;
+				e.dst_width = dw;
+				e.dst_height = dh;
+			}
+			expect(copier.composite(eyes), "composite a transparent overlay");
+			read_pixels(dst, dw, dh, &px);
+			expect(pixel_is(px, dw, dw / 2, dh / 2, 0, 0, 255), "transparent overlay: the scene shows (blue)");
+
+			fill_ov(0.f, 1.f, 0.f, 1.f);
+			expect(copier.composite(eyes), "composite an opaque overlay");
+			read_pixels(dst, dw, dh, &px);
+			expect(pixel_is(px, dw, 3, 3, 0, 255, 0), "opaque overlay covers the scene (green)");
+
+			// 50% red over blue, blended in linear light: 0.5 linear is sRGB 188.
+			fill_ov(1.f, 0.f, 0.f, 0.5f);
+			expect(copier.composite(eyes), "composite a half-transparent overlay");
+			read_pixels(dst, dw, dh, &px);
+			const uint8_t *m = &px[((size_t)(dh / 2) * dw + dw / 2) * 4];
+			printf("      half-transparent red over blue = %u,%u,%u\n", m[0], m[1], m[2]);
+			expect(std::abs((int)m[0] - 188) <= 3 && m[1] == 0 && std::abs((int)m[2] - 188) <= 3,
+			       "half-transparent overlay mixes in linear light (~188,0,188)");
+
+			for (auto &e : eyes) {
+				e.count = 1;
+			}
+			expect(copier.composite(eyes), "composite the scene alone");
+			read_pixels(dst, dw, dh, &px);
+			expect(pixel_is(px, dw, dw / 2, dh / 2, 0, 0, 255), "the scene alone (blue)");
+
+			copier.forget(43);
+			vk.DestroyImage(vk.device, ov, nullptr);
+			vk.FreeMemory(vk.device, ov_mem, nullptr);
+		}
+
+		// FSR (fsr_render_scale): the 256x128 scene upscaled 2x into a 512x256 "swapchain".
+		{
+			const uint32_t uw = 2 * sw, uh = 2 * sh;
+			VkImageCreateInfo up_ci = dst_ci;
+			up_ci.extent = {uw, uh, 1};
+			VkImage up;
+			CHECK_VK(vk.CreateImage(vk.device, &up_ci, nullptr, &up));
+			VkDeviceMemory up_mem = bind_memory(up, false);
+			run([&] { barrier(up, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); });
+
+			copier.set_upscale(true, 0.2f);
+			VkCopier::CompositeEye eyes[2] = {};
+			for (auto &e : eyes) {
+				e.count = 1;
+				e.src[0] = 42;
+				e.rect[0][2] = 1.f;
+				e.rect[0][3] = 1.f;
+				e.dst = up;
+				e.dst_width = uw;
+				e.dst_height = uh;
+			}
+			fill(0.f, 0.f, 1.f, VK_IMAGE_LAYOUT_GENERAL); // blue
+			expect(copier.composite(eyes), "FSR: composite + EASU + RCAS (256x128 -> 512x256)");
+			expect(copier.upscaled(), "FSR: it upscaled (not a plain composite)");
+			read_pixels(up, uw, uh, &px);
+			bool flat = true;
+			for (auto [x, y] : {std::pair<uint32_t, uint32_t>{0, 0}, {uw / 2, uh / 2}, {uw - 1, uh - 1}}) {
+				flat = pixel_near(px, uw, x, y, 0, 0, 255, 1) && flat;
+			}
+			expect(flat, "FSR: a flat colour stays that colour (+-1), edges included (blue)");
+
+			// Mid grey: FSR works on sRGB-encoded values and decodes after RCAS; 0.5 linear is sRGB 188.
+			fill(0.5f, 0.5f, 0.5f, VK_IMAGE_LAYOUT_GENERAL);
+			expect(copier.composite(eyes), "FSR: upscale mid grey");
+			read_pixels(up, uw, uh, &px);
+			const uint8_t *g = &px[((size_t)(uh / 2) * uw + uw / 2) * 4];
+			printf("      FSR mid grey = %u,%u,%u\n", g[0], g[1], g[2]);
+			expect(std::abs((int)g[0] - 188) <= 2 && std::abs((int)g[1] - 188) <= 2 && std::abs((int)g[2] - 188) <= 2,
+			       "FSR: the sRGB round trip keeps the brightness (~188)");
+
+			// Dynamic resolution: the game renders into a smaller part of its texture under load. The
+			// region changes inside FSR's fixed-size input; its edge must not pick up what the last,
+			// larger frame left beyond it (green there, blue now).
+			fill(0.f, 1.f, 0.f, VK_IMAGE_LAYOUT_GENERAL); // green, full frame
+			expect(copier.composite(eyes), "FSR: full frame (green)");
+			fill(0.f, 0.f, 1.f, VK_IMAGE_LAYOUT_GENERAL); // blue
+			for (auto &e : eyes) {
+				e.rect[0][2] = 0.869f; // seen in HL2:VR
+				e.rect[0][3] = 0.869f;
+			}
+			expect(copier.composite(eyes), "FSR: smaller region of the texture (dynamic resolution)");
+			expect(copier.upscaled(), "FSR: still upscaling");
+			read_pixels(up, uw, uh, &px);
+			bool clean = true;
+			for (auto [x, y] : {std::pair<uint32_t, uint32_t>{uw - 1, uh - 1}, {uw - 1, 0}, {0, uh - 1}, {uw / 2, uh / 2}}) {
+				clean = pixel_near(px, uw, x, y, 0, 0, 255, 1) && clean;
+			}
+			expect(clean, "FSR: the smaller region fills the image, edges without the old frame (blue)");
+			for (auto &e : eyes) {
+				e.rect[0][2] = 1.f;
+				e.rect[0][3] = 1.f;
+			}
+
+			// A scene as large as the swapchain still goes through FSR (1:1 + sharpening), so the look
+			// doesn't flip between frames when dynamic resolution crosses the swapchain's size.
+			for (auto &e : eyes) {
+				e.dst = dst;
+				e.dst_width = dw;
+				e.dst_height = dh;
+			}
+			fill(0.f, 1.f, 0.f, VK_IMAGE_LAYOUT_GENERAL); // green
+			expect(copier.composite(eyes), "FSR on, scene larger than the swapchain");
+			expect(copier.upscaled(), "FSR: used every frame while on (1:1 pass)");
+			read_pixels(dst, dw, dh, &px);
+			expect(pixel_near(px, dw, dw / 2, dh / 2, 0, 255, 0, 1), "FSR: the downscaled scene arrives (green)");
+			copier.set_upscale(false, 0.2f);
+
+			vk.DestroyImage(vk.device, up, nullptr);
+			vk.FreeMemory(vk.device, up_mem, nullptr);
+		}
+
+		printf("info: DMA-BUF write-fence waits used: %llu\n", (unsigned long long)copier.fence_waits());
 		copier.forget(42);
 		expect(!copier.has(42), "forget drops the import");
 	}

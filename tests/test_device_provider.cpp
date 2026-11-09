@@ -6,16 +6,18 @@
 
 #include <cstring>
 
-TEST_CASE("Init adds exactly one HMD with the configured serial")
+TEST_CASE("Init adds the HMD with the configured serial first, then the controllers")
 {
 	fake::DriverContext ctx;
 	ctx.install();
 	ml::DeviceProvider provider;
 
+	// No Monado here: the controllers are added anyway (inactive until it connects).
 	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
-	REQUIRE(ctx.host.added.size() == 1);
+	REQUIRE(ctx.host.added.size() == 3);
 	CHECK(ctx.host.added[0].serial == "MONADOLINK-0001");
 	CHECK(ctx.host.added[0].device_class == vr::TrackedDeviceClass_HMD);
+	CHECK(ctx.host.added[1].device_class == vr::TrackedDeviceClass_Controller);
 	provider.Cleanup();
 }
 
@@ -57,7 +59,7 @@ TEST_CASE("activated HMD advertises direct mode, its display and 120 Hz")
 	provider.Cleanup();
 }
 
-TEST_CASE("RunFrame publishes a valid pose once the HMD is active")
+TEST_CASE("without Monado, RunFrame publishes a not-tracking pose once the HMD is active")
 {
 	fake::DriverContext ctx;
 	ctx.install();
@@ -65,18 +67,17 @@ TEST_CASE("RunFrame publishes a valid pose once the HMD is active")
 	REQUIRE(provider.Init(&ctx) == vr::VRInitError_None);
 
 	provider.RunFrame();
-	CHECK(ctx.host.poses.empty()); // not activated yet: nothing to update
+	CHECK(ctx.host.poses_copy().empty()); // not activated yet: nothing to update
 
 	ctx.host.added.at(0).driver->Activate(3);
 	provider.RunFrame();
-	REQUIRE(ctx.host.poses.size() == 1);
-	const auto &[device, pose] = ctx.host.poses[0];
+	const auto poses = ctx.host.poses_copy();
+	REQUIRE_FALSE(poses.empty());
+	const auto &[device, pose] = poses.back();
 	CHECK(device == 3);
-	CHECK(pose.poseIsValid);
-	CHECK(pose.deviceIsConnected);
-	CHECK(pose.result == vr::TrackingResult_Running_OK);
+	CHECK_FALSE(pose.poseIsValid);
+	CHECK_FALSE(pose.deviceIsConnected);
 	CHECK(pose.qRotation.w == doctest::Approx(1.0));
-	CHECK(pose.vecPosition[1] == doctest::Approx(1.6)); // M0 placeholder head height
 
 	provider.Cleanup();
 }
