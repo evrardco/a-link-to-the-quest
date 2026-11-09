@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Composites SteamVR's layers for one eye into one image (M3): the scene, then each overlay blended
 // over it with straight alpha, like ALVR's Windows compositor. Monado then gets a single projection
 // layer: its multi-layer compute path showed multi-layer frames as a magnified smear on Quest Link.

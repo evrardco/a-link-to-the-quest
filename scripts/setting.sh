@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Host: set (or show) a monadolink setting as a SteamVR user override, in steamvr.vrsettings
 # (section driver_monadolink). Overrides win over the driver's defaults and survive reinstalls.
 # SteamVR rewrites that file when it exits, so run this with SteamVR closed, then start SteamVR.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // FSR 1 upscaling, pass 2 (RCAS, robust contrast-adaptive sharpening) on EASU's output, at the
 // swapchain's size. Works on the sRGB-encoded values like EASU and writes linear values, which
 // VkCopier's final blit encodes into the sRGB swapchain.

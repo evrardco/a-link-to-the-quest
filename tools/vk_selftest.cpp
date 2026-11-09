@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // GPU self-test of the frame copy path, without SteamVR or Monado: makes an image the way SteamVR
 // does (exportable as an opaque fd), fills it with a known colour, imports it with VkCopier and blits
 // it into a "swapchain" image exactly as the driver does, then reads the pixels back.

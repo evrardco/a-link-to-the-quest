@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // In-memory fakes of the SteamVR driver host interfaces, so driver code can run without SteamVR.
 // FakeDriverContext::install() makes the vr::VRSettings()/VRProperties()/... accessors return these.
 #pragma once

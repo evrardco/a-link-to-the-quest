@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Host, while SteamVR runs: ask SteamVR (its vrcmd tool) which poses it has for the tracked devices,
 # for 20 s, while you turn the headset in your hands. Writes <project>/poses.txt.
 cd "$(dirname "$0")/../.."

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // StderrCapture: stderr output (the OpenXR loader's and Monado's errors) lands in SteamVR's log.
 #include "device_provider.h"
 #include "fake_openvr.h"

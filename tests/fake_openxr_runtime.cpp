@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // A minimal OpenXR runtime for the tests: just what XrClient uses, driven by FakeXrState.
 // Loaded by the real OpenXR loader through build/fake_openxr_runtime.json.
 #include "fake_openxr_state.h"

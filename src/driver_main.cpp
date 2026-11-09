@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Entry point: vrserver dlopens driver_monadolink.so and asks HmdDriverFactory for interfaces.
 #include "device_provider.h"
 

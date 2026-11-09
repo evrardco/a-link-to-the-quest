@@ -1,2 +1,5 @@
 build/
 build-*/
+# Monado's logs (start-vr.sh)
+monado-host*.log
+__pycache__/

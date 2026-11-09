@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The Vulkan instance + device our OpenXR session renders with (created through
 // XR_KHR_vulkan_enable2, so Monado picks the GPU and adds the extensions it needs).
 //

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Initialise the submodules after cloning: every submodule in .gitmodules, shallow (one commit each),
 # and openvr trimmed to what the build uses (headers, plus lib/ and bin/linux64 for monadolink_tune)
 # instead of ~500 MB with Valve's samples. Submodules that are already initialised are left alone,

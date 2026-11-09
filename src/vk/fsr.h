@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // FSR 1 constants (AMD's FsrEasuCon / FsrRcasCon from external/FidelityFX-FSR, run on the CPU) for
 // the push constants of fsr_easu.comp and fsr_rcas.comp.
 #pragma once

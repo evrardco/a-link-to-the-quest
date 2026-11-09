@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Our OpenXR client inside vrserver: an instance + session with Monado (or any OpenXR runtime).
 //
 // A Vulkan session (XR_KHR_vulkan_enable2) with one swapchain per eye and layer, into which SteamVR's frames

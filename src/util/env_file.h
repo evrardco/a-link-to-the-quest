@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The Quest VR tray's settings file (~/.config/quest-vr/settings.env): KEY=VALUE lines, # comments.
 // start-monado.sh sources it for Monado; monadolink reads its MONADOLINK_* keys (FSR) at Init, so the
 // tray's Settings window covers the driver too.

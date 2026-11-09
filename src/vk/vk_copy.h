@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Copies SteamVR's eye textures into OpenXR swapchain images, on our Vulkan queue.
 //
 // SteamVR's textures come as opaque Vulkan fds (IVRIPCResourceManagerClient::ReceiveSharedFd) of

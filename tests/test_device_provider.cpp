@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // DeviceProvider + HmdDevice against fake SteamVR host interfaces.
 #include "device_provider.h"
 #include "fake_openvr.h"

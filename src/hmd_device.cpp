@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "hmd_device.h"
 
 #include "util/log.h"

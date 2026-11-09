@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // In-headset offset tuning (offset_tuner.h): the chord, flicks, the grip modifier, reset, and that the
 // game sees nothing while tuning.
 #include "offset_tuner.h"

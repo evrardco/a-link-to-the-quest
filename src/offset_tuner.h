@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // In-headset controller offset tuning, with the controllers themselves: hold both thumbsticks
 // clicked for a second to enter (or leave) tuning mode; then stick flicks nudge the offset, one step
 // per flick, and the game sees no buttons until you leave. Every direction is as seen from the right

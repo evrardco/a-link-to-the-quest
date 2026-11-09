@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Shared between fake_openxr_runtime.so and the tests: what the fake runtime reports, and what it saw.
 // The tests dlopen the runtime themselves (so it stays loaded across instances) and reach this
 // struct with dlsym("fake_xr_state").

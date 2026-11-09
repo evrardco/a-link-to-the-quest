@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Forward what the process writes to stderr into SteamVR's log for a while.
 //
 // The OpenXR loader and Monado's client library report their errors on stderr, which vrserver

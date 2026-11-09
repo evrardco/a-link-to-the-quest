@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "vk/vk_copy.h"
 
 #include "util/log.h"

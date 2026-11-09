@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // IVRDriverDirectModeComponent: SteamVR's compositor renders into textures we allocate and hands
 // us its layers every frame.
 //

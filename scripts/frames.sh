@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Host: turn the driver's frame submission (M2 Vulkan path) on or off in the installed driver.
 # off = M1 behaviour (tracking only, no Vulkan). Restart SteamVR afterwards.
 # Usage: a-link-to-the-quest/scripts/frames.sh on|off

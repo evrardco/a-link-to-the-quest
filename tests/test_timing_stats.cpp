@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // TimingStats: the per-interval frame timing line in vrserver.txt.
 #include "direct/direct_mode.h"
 #include "fake_openvr.h"

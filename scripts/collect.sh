@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Host: probe Monado for 10 s (wear the headset and move your head), then copy SteamVR's last log.
 # Writes <project>/probe.txt and <project>/vrserver.txt.
 cd "$(dirname "$0")/../.."

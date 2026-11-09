@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Logging into SteamVR's vrserver.txt (Settings → Developer → Web console, or the log file).
 #pragma once
 

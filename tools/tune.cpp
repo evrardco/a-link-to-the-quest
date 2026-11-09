@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Live tuning of the controller offset while SteamVR runs: changes the driver_monadolink settings
 // through SteamVR's own IVRSettings (the driver re-reads them twice a second), and SteamVR saves them
 // to steamvr.vrsettings when it exits.

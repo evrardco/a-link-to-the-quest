@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "device_provider.h"
 
 #include "util/env_file.h"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The HMD: a tracked device with a display component and a driver direct-mode component.
 #pragma once
 

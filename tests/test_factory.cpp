@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // HmdDriverFactory: the only symbol vrserver looks up in driver_monadolink.so.
 #include <doctest/doctest.h>
 #include <openvr_driver.h>

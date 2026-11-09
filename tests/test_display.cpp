@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // DisplayComponent geometry, which SteamVR uses to size and place the eye images.
 #include "fake_openvr.h"
 #include "hmd_device.h"

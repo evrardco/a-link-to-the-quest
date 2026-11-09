@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // XrClient and DeviceProvider against the real (static) OpenXR loader + tests/fake_openxr_runtime.cpp.
 #include "device_provider.h"
 #include "fake_openvr.h"

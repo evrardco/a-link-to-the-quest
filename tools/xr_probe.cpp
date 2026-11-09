@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Runs XrClient (the driver's OpenXR code) against the active OpenXR runtime without SteamVR:
 // prints what the HMD would report and head poses. Usage: monadolink_xr_probe [seconds] [runtime.json]
 #include "xr/xr_client.h"

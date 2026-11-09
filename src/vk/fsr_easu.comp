@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // FSR 1 upscaling, pass 1 (EASU, edge-adaptive spatial upsampling): VkCopier's composite at SteamVR's
 // render size -> the OpenXR swapchain's size. AMD's ffx_fsr1.h (external/FidelityFX-FSR), 32-bit path.
 //

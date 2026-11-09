@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "xr/xr_client.h"
 
 #include "util/log.h"

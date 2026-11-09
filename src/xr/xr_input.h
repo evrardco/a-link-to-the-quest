@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Touch controller input through OpenXR actions (M4): one action set bound to
 // /interaction_profiles/oculus/touch_controller, with the hands as subaction paths (so one "lower
 // button" action is A on the right and X on the left), a grip space per hand, and haptics.

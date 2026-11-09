@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // DirectModeComponent swap texture bookkeeping against a fake IVRIPCResourceManagerClient.
 #include "direct/direct_mode.h"
 #include "fake_openvr.h"

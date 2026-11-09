@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Touch controllers (M4): OpenXR actions -> ControllerDevice -> SteamVR input components, and haptics
 // back, against the fake runtime (behind the real loader) and the fake SteamVR host.
 #include "device_provider.h"

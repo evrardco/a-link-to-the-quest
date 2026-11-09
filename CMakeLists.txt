@@ -114,10 +114,10 @@ target_link_options(driver_${DRIVER_NAME} PRIVATE -Wl,--no-undefined -Wl,--exclu
 target_link_libraries(driver_${DRIVER_NAME} PRIVATE Threads::Threads openxr_loader ${CMAKE_DL_LIBS})
 
 # Inside vrserver the default OpenXR runtime is SteamVR itself, so the driver's default settings name
-# Monado's manifest. Default: this project's host build of Monado (the driver runs on the host, so
-# that's the right one even for a sandbox build of the driver).
+# Monado's manifest. Default: the host build of the Monado submodule (the driver runs on the host, so
+# that's the right one even for a sandbox build of the driver); start-monado.sh's copy wins when present.
 get_filename_component(MONADOLINK_DEFAULT_RUNTIME_JSON
-	${CMAKE_CURRENT_SOURCE_DIR}/../monado/build-fedora/openxr_monado-dev.json ABSOLUTE)
+	${CMAKE_CURRENT_SOURCE_DIR}/external/monado/build-fedora/openxr_monado-dev.json ABSOLUTE)
 set(MONADOLINK_OPENXR_RUNTIME_JSON ${MONADOLINK_DEFAULT_RUNTIME_JSON} CACHE STRING
 	"Monado's OpenXR runtime manifest, the default of the driver's openxr_runtime_json setting")
 set(MONADOLINK_GENERATED_SETTINGS ${CMAKE_BINARY_DIR}/generated/default.vrsettings)
@@ -127,7 +127,13 @@ configure_file(driver/resources/settings/default.vrsettings ${MONADOLINK_GENERAT
 add_custom_target(driver_files ALL
 	COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/driver ${DRIVER_OUT}
 	COMMAND ${CMAKE_COMMAND} -E copy ${MONADOLINK_GENERATED_SETTINGS} ${DRIVER_OUT}/resources/settings/default.vrsettings
-	COMMENT "Copying driver manifest and resources"
+	# Licenses: ours, and those of the code compiled into the driver (OpenXR loader, FSR); THIRD_PARTY.md.
+	COMMAND ${CMAKE_COMMAND} -E make_directory ${DRIVER_OUT}/licenses
+	COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/LICENSE ${DRIVER_OUT}/licenses/LICENSE
+	COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY.md ${DRIVER_OUT}/licenses/THIRD_PARTY.md
+	COMMAND ${CMAKE_COMMAND} -E copy ${EXTERNAL_DIR}/OpenXR-SDK/LICENSE ${DRIVER_OUT}/licenses/OpenXR-SDK-LICENSE.txt
+	COMMAND ${CMAKE_COMMAND} -E copy ${EXTERNAL_DIR}/FidelityFX-FSR/license.txt ${DRIVER_OUT}/licenses/FidelityFX-FSR-LICENSE.txt
+	COMMENT "Copying driver manifest, resources and licenses"
 )
 add_dependencies(driver_${DRIVER_NAME} driver_files)
 

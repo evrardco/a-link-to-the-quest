@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Frame timing statistics, logged as one line per interval to find where late frames come from.
 //
 // The interval is a compile-time setting: ML_TIMING_STATS_INTERVAL_S seconds (CMake cache variable

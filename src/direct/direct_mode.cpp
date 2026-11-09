@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "direct/direct_mode.h"
 
 #include "util/log.h"

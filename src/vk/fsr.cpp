@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "vk/fsr.h"
 
 // AMD's headers, CPU half: the same code the shaders run sets up their constants. Its own translation

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // OpenXR -> OpenVR conversions (poses, FOV, eye transforms).
 #include "xr/xr_math.h"
 

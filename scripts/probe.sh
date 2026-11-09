@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Run the driver's OpenXR client against the running Monado, without SteamVR, and save the output.
 # Usage (host or sandbox): a-link-to-the-quest/scripts/probe.sh [seconds]   → writes <project>/probe.txt
 cd "$(dirname "$0")/../.."

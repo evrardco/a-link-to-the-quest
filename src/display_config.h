@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // The HMD's display as SteamVR sees it: defaults from the settings, overridden by what Monado reports.
 #pragma once
 

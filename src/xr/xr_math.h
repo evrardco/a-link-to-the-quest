@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Conversions between OpenXR and OpenVR types. Both APIs use the same conventions (right-handed,
 // +Y up, -Z forward, metres, quaternions), so poses map one to one.
 #pragma once

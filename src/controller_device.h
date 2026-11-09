@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // A Touch controller as SteamVR sees it (M4): an "oculus_touch" controller with the Quest 2 render
 // model, so games' existing Oculus Touch bindings apply. Fed from XrInput by the tracking thread.
 #pragma once

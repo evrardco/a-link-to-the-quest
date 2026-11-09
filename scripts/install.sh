@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # Build monadolink and install it into SteamVR's drivers folder (Flatpak or native Steam).
 # Usage: [MONADOLINK_TIMING_STATS_S=N] scripts/install.sh            build on the host (build-host/), copy
 #        scripts/install.sh --link                                   link SteamVR to the sandbox's build/
@@ -61,7 +62,7 @@ check_install() {
 	[ -d "$STEAMVR/resources/rendermodels/oculus_quest2_controller_left" ] ||
 		echo "WARNING: SteamVR has no oculus_quest2_controller_left render model: controllers will be invisible." >&2
 	echo
-	echo "SteamVR must be the OpenVR runtime (not xrizer): run ./openvr-runtime.sh steamvr in the project folder."
+	echo "SteamVR must be the OpenVR runtime (start-vr.sh switches a leftover xrizer setup back)."
 	echo "Tune the controller offset in the headset (hold both sticks clicked 1 s) or live from a terminal:"
 	echo "  $1/monadolink_tune"
 	echo "Logs: ~/.local/share/Steam/logs/vrserver.txt (Flatpak Steam: ~/.var/app/com.valvesoftware.Steam/.local/share/Steam/logs);"

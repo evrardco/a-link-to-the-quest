@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // IServerTrackedDeviceProvider: owns the devices and is ticked by vrserver every frame.
 #pragma once
 
